@@ -1,0 +1,106 @@
+{
+  "problem_name": "absence_days_prediction",
+  "model_file": "model_absence_days.pkl",
+  "model_type": "CatBoostRegressor",
+  "target_type": "regression_log1p_capped_days",
+  "days_cap": 180,
+  "input_features_ordered": [
+    "season",
+    "injury_group",
+    "player_age",
+    "player_position",
+    "club",
+    "league",
+    "injury_year",
+    "injury_month",
+    "injury_day",
+    "injury_dow",
+    "injury_weekofyear",
+    "season_phase",
+    "is_muscle_injury",
+    "is_knee_injury",
+    "is_illness",
+    "is_ankle_foot",
+    "is_impact_general",
+    "player_age_missing",
+    "injury_date_missing"
+  ],
+  "categorical_columns": [
+    "season",
+    "injury_group",
+    "player_position",
+    "club",
+    "league",
+    "season_phase"
+  ],
+  "numeric_columns": [
+    "player_age",
+    "injury_year",
+    "injury_month",
+    "injury_day",
+    "injury_dow",
+    "injury_weekofyear",
+    "is_muscle_injury",
+    "is_knee_injury",
+    "is_illness",
+    "is_ankle_foot",
+    "is_impact_general",
+    "player_age_missing",
+    "injury_date_missing"
+  ],
+  "raw_required_columns_before_feature_engineering": [
+    "season",
+    "injury",
+    "injury_from_parsed",
+    "player_name",
+    "player_age",
+    "player_position",
+    "club",
+    "league"
+  ],
+  "feature_engineering_rules": {
+    "injury_group": "mapped from raw injury text",
+    "injury_year": "from injury_from_parsed",
+    "injury_month": "from injury_from_parsed",
+    "injury_day": "from injury_from_parsed",
+    "injury_dow": "from injury_from_parsed",
+    "injury_weekofyear": "from injury_from_parsed",
+    "season_phase": "derived from injury_month",
+    "is_muscle_injury": "1 if injury_group == Muscle_Soft_Tissue else 0",
+    "is_knee_injury": "1 if injury_group == Knee_Ligament else 0",
+    "is_illness": "1 if injury_group == Illness_Virus else 0",
+    "is_ankle_foot": "1 if injury_group == Ankle_Foot else 0",
+    "is_impact_general": "1 if injury_group == Impact_General else 0",
+    "player_age_missing": "1 if player_age is missing else 0",
+    "injury_date_missing": "1 if injury_from_parsed is missing else 0"
+  },
+  "days_parsing_rule": "parse_days_value keeps digits/./- then converts to float",
+  "date_parsing_rule": "pd.to_datetime(..., errors='coerce') on injury_from_parsed",
+  "output_contract": {
+    "predicted_days": "float in [0, days_cap]",
+    "severity_bucket": [
+      "0_7",
+      "8_21",
+      "22_42",
+      "43_plus"
+    ]
+  },
+  "bucket_definition": {
+    "0_7": [
+      0,
+      7
+    ],
+    "8_21": [
+      8,
+      21
+    ],
+    "22_42": [
+      22,
+      42
+    ],
+    "43_plus": [
+      43,
+      null
+    ]
+  }
+}

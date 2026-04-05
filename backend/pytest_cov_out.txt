@@ -1,0 +1,70 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.7, pytest-9.0.2, pluggy-1.6.0 -- c:\Users\Lenovo\Downloads\smartclub_analytics\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+django: version: 4.2.28, settings: smartclub.settings (from ini)
+rootdir: c:\Users\Lenovo\Downloads\smartclub_analytics\backend
+configfile: pytest.ini
+plugins: anyio-4.12.1, cov-7.0.0, django-4.12.0
+collecting ... collected 52 items
+
+tests/test_chat.py::TestChatbot::test_chat_endpoint_exists PASSED        [  1%]
+tests/test_chat.py::TestChatbot::test_chat_injuries_query PASSED         [  3%]
+tests/test_chat.py::TestChatbot::test_chat_injury_risk_query PASSED      [  5%]
+tests/test_chat.py::TestChatbot::test_chat_missing_message PASSED        [  7%]
+tests/test_chat.py::TestChatbot::test_chat_nutri_query PASSED            [  9%]
+tests/test_chat.py::TestChatbot::test_chat_returns_reply_for_players PASSED [ 11%]
+tests/test_chat.py::TestChatbot::test_chat_training_load_query PASSED    [ 13%]
+tests/test_nutri.py::TestFoodCRUD::test_create_food PASSED               [ 15%]
+tests/test_nutri.py::TestFoodCRUD::test_delete_food PASSED               [ 17%]
+tests/test_nutri.py::TestFoodCRUD::test_duplicate_food_name PASSED       [ 19%]
+tests/test_nutri.py::TestFoodCRUD::test_list_foods PASSED                [ 21%]
+tests/test_nutri.py::TestFoodCRUD::test_retrieve_food PASSED             [ 23%]
+tests/test_nutri.py::TestGeneratePlan::test_generate_plan_creates_record PASSED [ 25%]
+tests/test_nutri.py::TestGeneratePlan::test_generate_plan_match_bulk PASSED [ 26%]
+tests/test_nutri.py::TestGeneratePlan::test_generate_plan_missing_weight_uses_player_weight PASSED [ 28%]
+tests/test_nutri.py::TestGeneratePlan::test_generate_plan_rest_cut_female PASSED [ 30%]
+tests/test_nutri.py::TestGeneratePlan::test_generate_plan_training_maintain PASSED [ 32%]
+tests/test_nutri.py::TestMealCalc::test_meal_calc_by_name PASSED         [ 34%]
+tests/test_nutri.py::TestMealCalc::test_meal_calc_empty_items PASSED     [ 36%]
+tests/test_nutri.py::TestMealCalc::test_meal_calc_unknown_food PASSED    [ 38%]
+tests/test_physio.py::TestInjuryCRUD::test_create_injury PASSED          [ 40%]
+tests/test_physio.py::TestInjuryCRUD::test_delete_injury PASSED          [ 42%]
+tests/test_physio.py::TestInjuryCRUD::test_injury_severity_choices PASSED [ 44%]
+tests/test_physio.py::TestInjuryCRUD::test_list_injuries PASSED          [ 46%]
+tests/test_physio.py::TestInjuryCRUD::test_retrieve_injury PASSED        [ 48%]
+tests/test_physio.py::TestTrainingLoad::test_create_load PASSED          [ 50%]
+tests/test_physio.py::TestTrainingLoad::test_list_loads PASSED           [ 51%]
+tests/test_physio.py::TestInjuryRisk::test_duration_predict PASSED       [ 53%]
+tests/test_physio.py::TestInjuryRisk::test_duration_predict_severe_recurrence PASSED [ 55%]
+tests/test_physio.py::TestInjuryRisk::test_injury_risk_horizon_30 PASSED [ 57%]
+tests/test_physio.py::TestInjuryRisk::test_injury_risk_no_data_player PASSED [ 59%]
+tests/test_physio.py::TestInjuryRisk::test_injury_risk_response PASSED   [ 61%]
+tests/test_physio_global.py::TestGlobalSummaryView::test_empty_summary PASSED [ 63%]
+tests/test_physio_global.py::TestGlobalSummaryView::test_summary_counts PASSED [ 65%]
+tests/test_physio_global.py::TestGlobalPlayersView::test_players_are_listed_and_ordered PASSED [ 67%]
+tests/test_physio_global.py::TestGlobalMetricsView::test_metrics_payload_shape PASSED [ 69%]
+tests/test_physio_global.py::TestGlobalRiskAndShapViews::test_risk_returns_integration_shell_response PASSED [ 71%]
+tests/test_physio_global.py::TestGlobalRiskAndShapViews::test_shap_returns_integration_shell_response PASSED [ 73%]
+tests/test_physio_global.py::TestGlobalTimeSeriesView::test_timeseries_default_shape PASSED [ 75%]
+tests/test_physio_global.py::TestGlobalTimeSeriesView::test_timeseries_respects_limit PASSED [ 76%]
+tests/test_physio_global.py::TestGlobalTimeSeriesView::test_timeseries_unknown_player_returns_empty_series PASSED [ 78%]
+tests/test_scout.py::TestPlayerCRUD::test_create_player PASSED           [ 80%]
+tests/test_scout.py::TestPlayerCRUD::test_create_player_missing_name PASSED [ 82%]
+tests/test_scout.py::TestPlayerCRUD::test_delete_player PASSED           [ 84%]
+tests/test_scout.py::TestPlayerCRUD::test_list_multiple_players PASSED   [ 86%]
+tests/test_scout.py::TestPlayerCRUD::test_list_players_empty PASSED      [ 88%]
+tests/test_scout.py::TestPlayerCRUD::test_retrieve_player PASSED         [ 90%]
+tests/test_scout.py::TestPlayerCRUD::test_update_player_age PASSED       [ 92%]
+tests/test_scout.py::TestContractCRUD::test_create_contract PASSED       [ 94%]
+tests/test_scout.py::TestContractCRUD::test_list_contracts PASSED        [ 96%]
+tests/test_scout.py::TestRemovedScoutAiEndpoints::test_shortlist_endpoint_removed PASSED [ 98%]
+tests/test_scout.py::TestRemovedScoutAiEndpoints::test_similar_endpoint_removed PASSED [100%]c:\Users\Lenovo\Downloads\smartclub_analytics\.venv\Lib\site-packages\coverage\report_core.py:107: CoverageWarning: Couldn't parse Python file 'C:\Users\Lenovo\Downloads\smartclub_analytics\backend\rename.py' (couldnt-parse); see https://coverage.readthedocs.io/en/7.13.4/messages.html#warning-couldnt-parse
+  coverage._warn(msg, slug="couldnt-parse")
+
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.12.7-final-0 _______________
+
+Coverage XML written to file coverage.xml
+Required test coverage of 35% reached. Total coverage: 43.23%
+============================= 52 passed in 38.06s =============================

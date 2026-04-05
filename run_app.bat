@@ -1,0 +1,6 @@
+@echo off  
+echo Starting Backend...  
+start "Django Backend" cmd /c "cd backend && python manage.py runserver"  
+echo Starting Frontend...  
+start "React Frontend" cmd /c "cd frontend && npm start"  
+echo App is starting! 

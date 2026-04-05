@@ -1,0 +1,21 @@
+player_full_name,injury_type,date,severity,days_absent,matches_missed,recurrence
+Karim Mansouri,Hamstring strain,2025-10-05,moderate,14,2,false
+Yassine Bouali,Ankle sprain,2025-09-12,mild,7,1,false
+Mehdi Rhaiem,Knee contusion,2025-11-20,mild,5,1,false
+Amine Trabelsi,Groin strain,2025-08-18,moderate,21,3,false
+Chamseddine Dabbabi,Hamstring strain,2025-10-30,severe,45,6,true
+Hamza Jelassi,Calf strain,2025-07-25,mild,10,1,false
+Nabil Maaloul,Ankle sprain,2025-09-05,moderate,18,2,true
+Aymen Darraji,Quadriceps strain,2025-11-01,mild,8,1,false
+Firas Chaouat,Hamstring strain,2025-08-10,moderate,14,2,false
+Bilel Saidani,Knee ligament,2025-06-15,severe,60,8,false
+Karim Mansouri,Calf strain,2025-07-20,mild,7,1,true
+Sofiene Zouaghi,Shoulder dislocation,2025-05-10,severe,30,4,false
+Ossama Haddadi,Back pain,2025-10-15,mild,5,0,false
+Walid Hichri,Ankle sprain,2025-11-08,mild,6,1,false
+Farouk Gamoudi,Finger fracture,2025-09-22,moderate,21,3,false
+Saif Ghezal,Hamstring strain,2025-10-18,moderate,16,2,false
+Maher Hannachi,Groin strain,2025-08-05,mild,9,1,false
+Riad Jeridi,Knee contusion,2025-07-12,mild,4,0,false
+Mohamed Ben Amor,Wrist sprain,2025-11-25,mild,7,1,false
+Yassine Bouali,Thigh strain,2025-11-15,moderate,12,2,true

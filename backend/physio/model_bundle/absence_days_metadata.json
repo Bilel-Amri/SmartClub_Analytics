@@ -1,0 +1,135 @@
+{
+  "problem_name": "absence_days_prediction",
+  "csv_path_used": "/kaggle/input/datasets/sananmuzaffarov/european-football-injuries-2020-2025/full_dataset_thesis - 1.csv",
+  "random_state": 42,
+  "row_count_after_cleaning": 15603,
+  "train_rows": 12336,
+  "valid_rows": 3267,
+  "days_cap": 180,
+  "regression_metrics": {
+    "mae_on_capped_days": 21.182317928160103,
+    "rmse_on_capped_days": 37.25962933650771,
+    "r2_on_capped_days": 0.09464651228945231
+  },
+  "bucket_metrics": {
+    "macro_f1": 0.316499058105219,
+    "weighted_f1": 0.3413791035034143
+  },
+  "bucket_report": {
+    "0_7": {
+      "precision": 0.75,
+      "recall": 0.09051724137931035,
+      "f1-score": 0.16153846153846155,
+      "support": 696.0
+    },
+    "22_42": {
+      "precision": 0.254050550874919,
+      "recall": 0.6144200626959248,
+      "f1-score": 0.35946813388353965,
+      "support": 638.0
+    },
+    "43_plus": {
+      "precision": 0.5185185185185185,
+      "recall": 0.1721311475409836,
+      "f1-score": 0.25846153846153846,
+      "support": 732.0
+    },
+    "8_21": {
+      "precision": 0.4523979957050823,
+      "recall": 0.5262281432139884,
+      "f1-score": 0.4865280985373364,
+      "support": 1201.0
+    },
+    "accuracy": 0.37128864401591677,
+    "macro avg": {
+      "precision": 0.49374176627462996,
+      "recall": 0.35082414870755174,
+      "f1-score": 0.316499058105219,
+      "support": 3267.0
+    },
+    "weighted avg": {
+      "precision": 0.4918793387987627,
+      "recall": 0.37128864401591677,
+      "f1-score": 0.3413791035034143,
+      "support": 3267.0
+    }
+  },
+  "top_feature_importance": [
+    {
+      "feature": "injury_group",
+      "importance": 19.29393310126682
+    },
+    {
+      "feature": "club",
+      "importance": 15.9985399652592
+    },
+    {
+      "feature": "season_phase",
+      "importance": 11.116453390626457
+    },
+    {
+      "feature": "season",
+      "importance": 7.412758671261064
+    },
+    {
+      "feature": "player_age",
+      "importance": 7.375209618680474
+    },
+    {
+      "feature": "player_position",
+      "importance": 7.139445425411949
+    },
+    {
+      "feature": "injury_weekofyear",
+      "importance": 6.285128566945766
+    },
+    {
+      "feature": "league",
+      "importance": 5.898031619636086
+    },
+    {
+      "feature": "injury_dow",
+      "importance": 5.14436871371902
+    },
+    {
+      "feature": "injury_day",
+      "importance": 4.297929095245472
+    },
+    {
+      "feature": "injury_year",
+      "importance": 4.199684751156336
+    },
+    {
+      "feature": "injury_month",
+      "importance": 2.7569917243560473
+    },
+    {
+      "feature": "is_knee_injury",
+      "importance": 1.2282970954377121
+    },
+    {
+      "feature": "is_illness",
+      "importance": 0.9258637642149731
+    },
+    {
+      "feature": "is_muscle_injury",
+      "importance": 0.5964931517046285
+    },
+    {
+      "feature": "is_ankle_foot",
+      "importance": 0.2809450234417922
+    },
+    {
+      "feature": "is_impact_general",
+      "importance": 0.049926321636119035
+    },
+    {
+      "feature": "player_age_missing",
+      "importance": 0.0
+    },
+    {
+      "feature": "injury_date_missing",
+      "importance": 0.0
+    }
+  ]
+}

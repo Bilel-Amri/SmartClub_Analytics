@@ -1,0 +1,1 @@
+"""NutriAI app for nutrition planning."""

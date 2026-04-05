@@ -1,0 +1,1 @@
+"""ScoutAI app for recruitment and player performance."""

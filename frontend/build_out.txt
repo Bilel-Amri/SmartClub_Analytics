@@ -1,0 +1,37 @@
+
+> smartclub-frontend@0.1.0 build
+> webpack --mode production
+
+asset [1m[33mbundle.js[39m[22m [1m[33m737 KiB[39m[22m [1m[33m[compared for emit][39m[22m [1m[32m[minimized][39m[22m [1m[33m[big][39m[22m (name: main) 1 related asset
+asset [1m[32mindex.html[39m[22m 311 bytes [1m[33m[compared for emit][39m[22m
+orphan modules 2.61 MiB [1m[33m[orphan][39m[22m 1876 modules
+runtime modules 1.29 KiB 7 modules
+cacheable modules 1.57 MiB
+  modules by path [1m./node_modules/lodash/*.js[39m[22m 151 KiB 193 modules
+  modules by path [1m./node_modules/style-loader/dist/runtime/*.js[39m[22m 5.84 KiB 6 modules
+  modules by path [1m./node_modules/react/[39m[22m 8 KiB 4 modules
+  modules by path [1m./node_modules/react-dom/[39m[22m 131 KiB 3 modules
+  modules by path [1m./node_modules/prop-types/[39m[22m 2.6 KiB 3 modules
+  modules by path [1m./src/[39m[22m 1.21 MiB 2 modules
+  modules by path [1m./node_modules/scheduler/[39m[22m 4.33 KiB 2 modules
+  modules by path [1m./node_modules/react-is/[39m[22m 2.4 KiB 2 modules
+  modules by path [1m./node_modules/css-loader/dist/runtime/*.js[39m[22m 2.31 KiB 2 modules
+  [1m./node_modules/eventemitter3/index.js[39m[22m 8.93 KiB [1m[33m[built][39m[22m [1m[33m[code generated][39m[22m
+  [1m./node_modules/decimal.js-light/decimal.js[39m[22m 52.1 KiB [1m[33m[built][39m[22m [1m[33m[code generated][39m[22m
+
+[1m[33mWARNING[39m[22m in [1masset size limit: The following asset(s) exceed the recommended size limit (244 KiB).
+This can impact web performance.
+Assets: 
+  bundle.js (737 KiB)[39m[22m
+
+[1m[33mWARNING[39m[22m in [1mentrypoint size limit: The following entrypoint(s) combined asset size exceeds the recommended limit (244 KiB). This can impact web performance.
+Entrypoints:
+  main (737 KiB)
+      bundle.js
+[39m[22m
+
+[1m[33mWARNING[39m[22m in [1mwebpack performance recommendations: 
+You can limit the size of your bundles by using import() or require.ensure to lazy load some parts of your application.
+For more info visit https://webpack.js.org/guides/code-splitting/[39m[22m
+
+webpack 5.105.2 compiled with [1m[33m3 warnings[39m[22m in 18334 ms

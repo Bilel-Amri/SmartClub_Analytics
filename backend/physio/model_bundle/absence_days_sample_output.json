@@ -1,0 +1,6 @@
+{
+  "predicted_days": 19.19,
+  "severity_bucket": "8_21",
+  "days_cap_used": 180,
+  "problem_name": "absence_days_prediction"
+}

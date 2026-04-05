@@ -1,0 +1,21 @@
+{
+  "sleep_duration_value": 8.0,
+  "ctl28_value": 183.21,
+  "mood_value": 3.0,
+  "readiness_value": 7.0,
+  "atl_value": 162.85857142857145,
+  "acwr_value": 1.42,
+  "strain_value": 806.0,
+  "soreness_value": 7.0,
+  "stress_value": 8.0,
+  "sleep_quality_value": 3.0,
+  "team_performance": 5.0,
+  "offensive_performance": 5.0,
+  "defensive_performance": 5.0,
+  "fatigue_value": 9.0,
+  "problems": "Unknown",
+  "weekly_load_value": 3400.0,
+  "ctl42_value": 183.81,
+  "monotony_value": 0.63,
+  "daily_load_value": 0.0
+}

@@ -1,0 +1,18 @@
+{
+  "model_file": "model_risk.pkl",
+  "schema_file": "risk_schema.json",
+  "task_type": "binary_classification",
+  "target_name": "injury_target",
+  "n_rows": 36550,
+  "n_features": 19,
+  "train_shape": [
+    29240,
+    19
+  ],
+  "test_shape": [
+    7310,
+    19
+  ],
+  "roc_auc": 0.8068061458282554,
+  "notes": "Feature files were wide format; injury.csv was event format with player_name/type/timestamp."
+}
