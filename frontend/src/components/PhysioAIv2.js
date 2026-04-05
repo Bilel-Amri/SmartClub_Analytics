@@ -206,7 +206,7 @@ function PlayerRiskSimulatorTab() {
     try {
       const r = await axios.post('/api/v2/physio/simulator/assess', form);
       setResult(r.data);
-    } catch (e) {
+    } catch {
       setResult({ error: "Assessment failed. Ensure proper data and that the server is running." });
     } finally {
       setLoading(false);

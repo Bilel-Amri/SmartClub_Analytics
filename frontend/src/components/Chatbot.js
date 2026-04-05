@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import axios from 'axios';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -266,7 +265,7 @@ export default function Chatbot() {
       });
 
       if (!response.ok) {
-        const errText = await response.text();
+        await response.text();
         setMessages(prev => prev.map(m =>
           m.id === botId
             ? { ...m, text: `❌ Server error ${response.status}`, streaming: false }
@@ -276,7 +275,7 @@ export default function Chatbot() {
       }
 
       const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      const decoder = new window.TextDecoder();
       let buffer = '';
       let fullText = '';
 
