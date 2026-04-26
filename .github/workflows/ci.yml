@@ -80,7 +80,7 @@ jobs:
 
       - name: Install npm deps
         working-directory: frontend
-        run: npm ci
+        run: npm install
 
       - name: Lint (ESLint)
         working-directory: frontend
