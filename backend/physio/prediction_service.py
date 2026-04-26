@@ -1,9 +1,19 @@
 import json
 import logging
+import math
 from pathlib import Path
+
 import joblib
-import pandas as pd
-import numpy as np
+
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    import numpy as np
+except Exception:
+    np = None
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +37,15 @@ class PredictionBundleLoader:
 
         logger.info(f"[PhysioAI] Initializing {self.prefix} bundle...")
         print(f"[PhysioAI] Initializing {self.prefix} bundle...")
+
+        if pd is None or np is None:
+            self.last_error = (
+                "Optional ML dependencies are missing (pandas/numpy). "
+                "Install backend/requirements-ml.txt to enable model inference."
+            )
+            logger.error(f"[PhysioAI] {self.last_error}")
+            print(f"[PhysioAI] {self.last_error}")
+            return
         
         if not schema_path.exists():
             self.last_error = f"Schema file not found: {schema_filename}"
@@ -102,6 +121,14 @@ class RiskPredictionService:
         self.loader = loader
 
     def predict(self, payload: dict) -> dict:
+        if pd is None:
+            return {
+                "success": False,
+                "error_code": "ML_DEPENDENCIES_MISSING",
+                "message": "pandas is required for Risk inference. Install backend/requirements-ml.txt",
+                "model_status": "error"
+            }
+
         if not self.loader.ready_state or self.loader.model is None:
             return {
                 "success": False,
@@ -289,6 +316,14 @@ class AbsencePredictionService:
         self.loader = loader
 
     def predict(self, payload: dict) -> dict:
+        if pd is None:
+            return {
+                "success": False,
+                "error_code": "ML_DEPENDENCIES_MISSING",
+                "message": "pandas is required for Absence inference. Install backend/requirements-ml.txt",
+                "model_status": "error"
+            }
+
         if not self.loader.ready_state or self.loader.model is None:
             return {
                 "success": False,
@@ -402,7 +437,7 @@ class AbsencePredictionService:
         raw_pred = float(self.loader.model.predict(df_input)[0])
 
         if self.loader.schema.get("target_type", "") == "regression_log1p_capped_days" and raw_pred < 6.0:
-            raw_pred = np.expm1(raw_pred)
+            raw_pred = math.expm1(raw_pred)
 
         predicted_days = max(1, int(round(raw_pred)))
         days_cap = self.loader.schema.get("days_cap", 180)

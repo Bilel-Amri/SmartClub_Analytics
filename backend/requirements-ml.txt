@@ -1,0 +1,5 @@
+# Optional ML runtime dependencies.
+# Install this only when you need CatBoost model loading/inference.
+pandas>=2.1
+numpy>=1.24
+catboost>=1.2

@@ -13,14 +13,20 @@ import { restoreSession, logout, setupAxios } from './auth';
 setupAxios(axios);
 
 const MODULES = [
-  { key: 'home',    label: 'Dashboard',  icon: '🏠', cls: '' },
-  { key: 'physio',  label: 'PhysioAI',   icon: '🏥', cls: 'physio' },
-  { key: 'nutri',   label: 'NutriAI',    icon: '🥗', cls: 'nutri' },
-  { key: 'chat',    label: 'Chatbot',    icon: '💬', cls: 'chat' },
-  { key: 'monitor', label: 'Monitoring', icon: '📊', cls: '' },
+  { key: 'home',    label: 'Dashboard',  icon: '🏠', cls: '', roles: ['all'] },
+  { key: 'physio',  label: 'PhysioAI',   icon: '🏥', cls: 'physio', roles: ['admin', 'physio', 'coach'] },
+  { key: 'nutri',   label: 'NutriAI',    icon: '🥗', cls: 'nutri', roles: ['admin', 'nutritionist', 'coach'] },
+  { key: 'chat',    label: 'Chatbot',    icon: '💬', cls: 'chat', roles: ['all'] },
+  { key: 'monitor', label: 'Monitoring', icon: '📊', cls: '', roles: ['admin'] },
 ];
 
-function Overview({ setPage }) {
+function filterModules(modules, role) {
+  if (!role) return modules;
+  const userRole = role.toLowerCase();
+  return modules.filter(m => m.roles.includes('all') || m.roles.includes(userRole) || userRole === 'admin');
+}
+
+function Overview({ setPage, userRole }) {
   const [counts, setCounts]         = useState({ players: '…', injuries: '…', foods: '…', contracts: '…' });
   const [summary, setSummary]       = useState(null);
   const [summaryErr, setSummaryErr] = useState(false);
@@ -29,10 +35,10 @@ function Overview({ setPage }) {
     // KPI counts
     const get = d => Array.isArray(d.data) ? d.data.length : (d.data.count ?? d.data.results?.length ?? '?');
     Promise.all([
-      axios.get('/api/scout/players/'),
-      axios.get('/api/v2/physio/squad/daily-risk'),
-      axios.get('/api/nutri/foods/'),
-      axios.get('/api/scout/contracts/'),
+      axios.get('/api/scout/players/').catch(() => ({ data: { count: '🔒' } })),
+      axios.get('/api/v2/physio/squad/daily-risk').catch(() => ({ data: { summary: { injured: '🔒' } } })),
+      axios.get('/api/nutri/foods/').catch(() => ({ data: { count: '🔒' } })),
+      axios.get('/api/scout/contracts/').catch(() => ({ data: { count: '🔒' } })),
     ]).then(([p, i, f, c]) => setCounts({
       players: get(p),
       injuries: i.data?.summary?.injured ?? '?',
@@ -173,12 +179,11 @@ function Overview({ setPage }) {
             <div>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginBottom: 12 }}>No player stats yet — explore modules:</p>
               <div className="cards-grid" style={{ marginBottom: 0 }}>
-                {[['🏥', 'PhysioAI', 'Risk & training load', 'physio'],
-                  ['🥗', 'NutriAI', 'Meal plans', 'nutri']].map(([icon, name, desc, key]) => (
-                  <div key={key} className={`card ${key}`} onClick={() => setPage(key)} style={{ padding: '16px' }}>
-                    <div className="card-icon" style={{ fontSize: '1.5rem', marginBottom: '8px' }}>{icon}</div>
-                    <h3 style={{ fontSize: '0.9rem' }}>{name}</h3>
-                    <p style={{ fontSize: '0.75rem' }}>{desc}</p>
+                {filterModules(MODULES, userRole).filter(m => m.key === 'physio' || m.key === 'nutri').map(m => (
+                  <div key={m.key} className={`card ${m.cls}`} onClick={() => setPage(m.key)} style={{ padding: '16px' }}>
+                    <div className="card-icon" style={{ fontSize: '1.5rem', marginBottom: '8px' }}>{m.icon}</div>
+                    <h3 style={{ fontSize: '0.9rem' }}>{m.label}</h3>
+                    <p style={{ fontSize: '0.75rem' }}>{m.key === 'physio' ? 'Risk & training load' : 'Meal plans'}</p>
                   </div>
                 ))}
               </div>
@@ -260,7 +265,7 @@ export default function App() {
           <p>Club Intelligence</p>
         </div>
         <div className="nav-section">Modules</div>
-        {MODULES.map(m => (
+        {filterModules(MODULES, user?.role).map(m => (
           <button
             key={m.key}
             className={`nav-item ${m.cls} ${page === m.key ? `active ${m.cls}` : ''}`}
@@ -295,7 +300,7 @@ export default function App() {
         </div>
       </aside>
       <main className="main-content">
-        {page === 'home'    && <Overview setPage={setPage} />}
+        {page === 'home'    && <Overview setPage={setPage} userRole={user?.role} />}
         {page === 'physio'  && <PhysioAI />}
         {page === 'nutri'   && <NutriAI />}
         {page === 'chat'    && <Chatbot />}

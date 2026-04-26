@@ -18,10 +18,9 @@ References
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +196,26 @@ def compute_tdee(
     return bmr * (mult + pos)
 
 
+def _percentile(values: list[float], pct: float) -> float:
+    """Linear-interpolated percentile without external dependencies."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+
+    k = (len(ordered) - 1) * (pct / 100.0)
+    floor_idx = int(math.floor(k))
+    ceil_idx = int(math.ceil(k))
+    if floor_idx == ceil_idx:
+        return float(ordered[floor_idx])
+
+    lower = ordered[floor_idx]
+    upper = ordered[ceil_idx]
+    frac = k - floor_idx
+    return float(lower + (upper - lower) * frac)
+
+
 def dynamic_carbs_from_load(
     player,
     date_for_plan: date,
@@ -247,9 +266,9 @@ def dynamic_carbs_from_load(
         carbs_g = base_g_per_kg * weight_kg
         return round(carbs_g, 1), base_g_per_kg, 'insufficient_data'
 
-    arr       = np.array(loads, dtype=float)
-    p20       = float(np.percentile(arr, 20))
-    p80       = float(np.percentile(arr, 80))
+    arr       = [float(v) for v in loads]
+    p20       = _percentile(arr, 20)
+    p80       = _percentile(arr, 80)
     last_load = float(arr[0])  # most recent session
 
     if last_load > p80:
@@ -340,10 +359,16 @@ def live_dinner_feedback(total_distance_km: float, weight_kg: float) -> dict[str
     -------
     dict with dinner adjustment details
     """
-    if total_distance_km > 10.0:
-        # 1.0 g/kg for each km above 10km, capped at 3.0 g/kg
-        extra_g_per_kg = min((total_distance_km - 10.0) * 0.1 + 1.0, 3.0)
-        extra_g        = round(extra_g_per_kg * weight_kg, 0)
+    # Fix: Provide feedback for any distance to make the UI interactive
+    if total_distance_km > 0:
+        # Scale carbs linearly for any distance. For > 10km we give more.
+        if total_distance_km > 10.0:
+            extra_g_per_kg = min((total_distance_km - 10.0) * 0.1 + 1.0, 3.0)
+        else:
+            # Under 10km, give a proportional amount of carbs
+            extra_g_per_kg = max(0.2, total_distance_km * 0.1)
+            
+        extra_g = round(extra_g_per_kg * weight_kg, 0)
         return {
             'dinner_adjustment':  True,
             'extra_carbs_g':      extra_g,
@@ -351,8 +376,8 @@ def live_dinner_feedback(total_distance_km: float, weight_kg: float) -> dict[str
             'distance_km':        total_distance_km,
             'recommended_foods': [
                 f'White rice ~{int(extra_g * 1.4)}g cooked',
-                'Sports recovery drink (60g carbs)',
-                'Banana x2',
+                f'Sports recovery drink ({int(extra_g * 0.4)}g carbs)',
+                'Banana x1' if extra_g < 30 else 'Banana x2',
                 'White bread with honey',
             ],
             'note': (
@@ -366,7 +391,7 @@ def live_dinner_feedback(total_distance_km: float, weight_kg: float) -> dict[str
         'dinner_adjustment':  False,
         'extra_carbs_g':      0,
         'distance_km':        total_distance_km,
-        'note':               'Standard dinner macros apply. Session distance < 10 km.',
+        'note':               'Standard dinner macros apply. Session distance was 0 km.',
     }
 
 

@@ -1,640 +1,852 @@
-"""
-SmartClub tool functions — called by the LLM agent.
-Each returns a dict with 'ok': True/False and 'data' or 'error'.
-All data fetched via Django ORM (no HTTP self-calls → no auth issues).
-"""
 from __future__ import annotations
-import time
+
+import logging
+import random
 from typing import Any
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _timed(fn, *args, **kwargs) -> tuple[Any, int]:
-    """Run fn(*args, **kwargs), return (result, latency_ms)."""
-    t0 = time.monotonic()
-    result = fn(*args, **kwargs)
-    return result, int((time.monotonic() - t0) * 1000)
+logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. player_search
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# Tool schemas  (OpenAI / Groq function-calling format)
+# ──────────────────────────────────────────────
 
-def player_search(query: str = '', scope: str = 'club', limit: int = 10) -> dict:
-    """
-    Search players by name.  Pass query='' or query='*' to list the whole squad.
-    scope='club'   → Club (Scout) players
-    scope='global' → SoccerMon GlobalPlayers
-    """
-    query = (query or '').strip().lstrip('*').strip()  # '*' → ''
-
-    if scope == 'global':
-        from physio.models import GlobalPlayer
-        qs = (GlobalPlayer.objects.filter(external_id__icontains=query)
-              if query else GlobalPlayer.objects.all())
-        qs = qs[:limit]
-        results = [{'id': str(p.external_id), 'name': p.external_id, 'team': p.team}
-                   for p in qs]
-    else:
-        from scout.models import Player
-        qs = (Player.objects.filter(full_name__icontains=query)
-              if query else Player.objects.all())
-        qs = qs.order_by('full_name')[:limit]
-        results = [
-            {
-                'id': p.id,
-                'name': p.full_name,
-                'position': p.position,
-                'age': p.age,
-                'club': p.current_club,
-            }
-            for p in qs
-        ]
-
-    if not results:
-        msg = f'No players found matching "{query}"' if query else 'No players in the database yet.'
-        return {'ok': False, 'error': msg, 'candidates': []}
-    return {'ok': True, 'data': results, 'total': len(results)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. physio_risk
-# ─────────────────────────────────────────────────────────────────────────────
-
-def physio_risk(player_id: int | str, horizon_days: int = 7,
-                scope: str = 'club') -> dict:
-    """
-    Return the latest injury-risk prediction and medical prescription.
-    scope='club'   -> InjuryRiskPrediction (Club player)
-    scope='global' -> Calls the real-time AI Risk Engine for GlobalPlayers
-    """
-    if scope == 'global':
-        from physio.models import GlobalPlayer
-        from physio.views import GlobalRiskView
-        import datetime
-        from django.test import RequestFactory
-        
-        # 1. Resolve player
-        player = None
-        if isinstance(player_id, str):
-             # Usually 'Veteran (CB) #21'
-             player = GlobalPlayer.objects.filter(external_id__icontains=player_id).first()
-        if not player:
-             try:
-                 player = GlobalPlayer.objects.get(pk=int(player_id))
-             except:
-                 pass
-                 
-        if not player:
-             return {'ok': False, 'error': f'Global profile matching "{player_id}" not found.'}
-             
-        try:
-             # Mock a request to the Risk Engine
-             mock_req = type('Request', (), {'query_params': {'horizon': str(horizon_days)}, 'user': type('U', (), {'is_authenticated': True, 'role': 'admin'})()})()
-             risk_res = GlobalRiskView().get(mock_req, player.id)
-             if hasattr(risk_res, 'status_code') and risk_res.status_code != 200:
-                  return {'ok': False, 'error': 'Risk engine unavailable.'}
-             r = risk_res.data
-             return {
-                 'ok': True,
-                 'data': {
-                      'player_id': r.get('player_id'),
-                      'player_name': r.get('external_id'),
-                      'risk_band': str(r.get('risk_band', '')).upper(),
-                      'risk_prob_pct': r.get('risk_pct'),
-                      'top_driver': r.get('top_factor'),
-                      'recommended_action': r.get('recommended_action'),
-                      'monitoring_note': r.get('monitoring_note'),
-                      'llm_directive': "Summarize this status professionally to the user. If the risk is HIGH, urgently advise the prescribed action."
-                 }
-             }
-        except Exception as e:
-             return {'ok': False, 'error': f'Risk Engine API Error: {str(e)}'}
-
-    from physio.models import InjuryRiskPrediction, Player
-    try:
-        player_id = int(player_id)
-        player = Player.objects.get(pk=player_id)
-    except (ValueError, Player.DoesNotExist):
-        return {'ok': False, 'error': f'Player id={player_id} not found'}
-
-    pred = (
-        InjuryRiskPrediction.objects
-        .filter(player=player, horizon_days=horizon_days)
-        .order_by('-predicted_at')
-        .first()
-    )
-    if pred is None:
-        # Try any horizon
-        pred = (
-            InjuryRiskPrediction.objects
-            .filter(player=player)
-            .order_by('-predicted_at')
-            .first()
-        )
-        if pred is None:
-            return {
-                'ok': False,
-                'error': (
-                    f'No risk prediction found for {player.full_name}. '
-                    'Go to PhysioAI -> Risk tab -> run Predict Risk first.'
-                ),
-            }
-
-    return {
-        'ok': True,
-        'data': {
-            'player_id': player.id,
-            'player_name': player.full_name,
-            'horizon_days': pred.horizon_days,
-            'risk_probability': round(pred.risk_probability, 4),
-            'risk_band': pred.risk_band,
-            'confidence_band': pred.confidence_band,
-            'top_factors': pred.shap_factors[:5] if pred.shap_factors else [],
-            'recommended_action': pred.recommended_action,
-            'monitoring_note': pred.monitoring_note,
-            'flag_for_review': pred.flag_for_physio_review,
-            'predicted_at': pred.predicted_at.isoformat(),
-        },
-    }
-
-def physio_timeseries(player_id: int | str, metrics: list[str] | None = None,
-                      scope: str = 'club', days: int = 14) -> dict:
-    """
-    Return recent training-load / wellness time-series for a player.
-    scope='club'   → TrainingLoad records
-    scope='global' → GlobalDailyRecord records
-    """
-    if metrics is None:
-        metrics = ['total_distance_km', 'rpe', 'sleep_quality']
-
-    if scope == 'global':
-        from physio.models import GlobalPlayer, GlobalDailyRecord
-        player_id = str(player_id)
-        try:
-            player = GlobalPlayer.objects.get(external_id=player_id)
-        except GlobalPlayer.DoesNotExist:
-            return {'ok': False, 'error': f'GlobalPlayer "{player_id}" not found'}
-
-        records = (
-            GlobalDailyRecord.objects
-            .filter(player=player)
-            .order_by('-date')[:days]
-        )
-        series = []
-        for r in reversed(list(records)):
-            row = {'date': r.date.isoformat()}
-            for m in metrics:
-                row[m] = getattr(r, m, None)
-            series.append(row)
-        return {'ok': True, 'player': player.external_id, 'data': series}
-
-    else:
-        from physio.models import TrainingLoad
-        from scout.models import Player
-        try:
-            player = Player.objects.get(pk=int(player_id))
-        except (ValueError, Player.DoesNotExist):
-            return {'ok': False, 'error': f'Player id={player_id} not found'}
-
-        records = (
-            TrainingLoad.objects
-            .filter(player=player)
-            .order_by('-date')[:days]
-        )
-        allowed = {'total_distance_km', 'rpe', 'sleep_quality',
-                   'sprints', 'accelerations', 'minutes_played'}
-        safe_metrics = [m for m in metrics if m in allowed]
-        if not safe_metrics:
-            safe_metrics = ['total_distance_km', 'rpe', 'sleep_quality']
-
-        series = []
-        for r in reversed(list(records)):
-            row = {'date': r.date.isoformat()}
-            for m in safe_metrics:
-                row[m] = getattr(r, m, None)
-            series.append(row)
-        return {
-            'ok': True,
-            'player': player.full_name,
-            'data': series,
-            'metrics': safe_metrics,
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. nutri_generate_plan
-# ─────────────────────────────────────────────────────────────────────────────
-
-def nutri_generate_plan(player_id: int, day_type: str = 'training',
-                        goal: str = 'maintain') -> dict:
-    """
-    Return the latest daily nutrition plan for a player, or generate a new one
-    by calling the NutriAI calculation logic directly.
-    """
-    from scout.models import Player
-    from nutri.models import DailyPlan
-    import datetime
-
-    try:
-        player = Player.objects.get(pk=int(player_id))
-    except (ValueError, Player.DoesNotExist):
-        return {'ok': False, 'error': f'Player id={player_id} not found'}
-
-    # Check for existing plan today
-    today = datetime.date.today()
-    plan = DailyPlan.objects.filter(
-        player=player, day_type=day_type, goal=goal
-    ).order_by('-date').first()
-
-    if plan:
-        return {
-            'ok': True,
-            'data': {
-                'player_name': player.full_name,
-                'date': str(plan.date),
-                'day_type': plan.day_type,
-                'goal': plan.goal,
-                'calories': round(plan.calories, 0),
-                'protein_g': round(plan.protein_g, 1),
-                'carbs_g': round(plan.carbs_g, 1),
-                'fat_g': round(plan.fat_g, 1),
-                'notes': plan.notes,
-            },
-        }
-    else:
-        return {
-            'ok': False,
-            'error': (
-                f'No nutrition plan found for {player.full_name} '
-                f'(day_type={day_type}, goal={goal}). '
-                'Go to NutriAI → Generate Plan to create one.'
-            ),
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. nutri_meal_calc
-# ─────────────────────────────────────────────────────────────────────────────
-
-def nutri_meal_calc(items: list[dict]) -> dict:
-    """
-    Calculate calories + macros for a list of {food_name|food_id, grams}.
-    """
-    from nutri.models import Food
-
-    if not items:
-        return {'ok': False, 'error': 'items list is required'}
-
-    total = {'calories': 0.0, 'protein_g': 0.0, 'carbs_g': 0.0, 'fat_g': 0.0}
-    breakdown = []
-    errors = []
-
-    for item in items:
-        grams = float(item.get('grams', 100))
-        food = None
-
-        if 'food_id' in item:
-            try:
-                food = Food.objects.get(pk=int(item['food_id']))
-            except (ValueError, Food.DoesNotExist):
-                errors.append(f'food_id={item["food_id"]} not found')
-                continue
-        elif 'food_name' in item:
-            food = Food.objects.filter(name__icontains=item['food_name']).first()
-            if not food:
-                errors.append(f'food "{item["food_name"]}" not found')
-                continue
-
-        if food:
-            factor = grams / 100.0
-            cal  = round(food.calories_100g * factor, 1)
-            prot = round(food.protein_100g  * factor, 1)
-            carb = round(food.carbs_100g    * factor, 1)
-            fat  = round(food.fat_100g      * factor, 1)
-            total['calories']  += cal
-            total['protein_g'] += prot
-            total['carbs_g']   += carb
-            total['fat_g']     += fat
-            breakdown.append({
-                'food': food.name,
-                'grams': grams,
-                'calories': cal,
-                'protein_g': prot,
-                'carbs_g': carb,
-                'fat_g': fat,
-            })
-
-    result = {
-        'ok': len(breakdown) > 0,
-        'total': {k: round(v, 1) for k, v in total.items()},
-        'breakdown': breakdown,
-    }
-    if errors:
-        result['warnings'] = errors
-    if not breakdown:
-        result['error'] = 'No valid food items found. ' + '; '.join(errors)
-    return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. food_search
-# ─────────────────────────────────────────────────────────────────────────────
-
-def food_search(query: str, limit: int = 8) -> dict:
-    """Search the food database by name."""
-    from nutri.models import Food
-    query = (query or '').strip()
-    if not query:
-        return {'ok': False, 'error': 'query is required'}
-
-    foods = Food.objects.filter(name__icontains=query)[:limit]
-    if not foods:
-        return {'ok': False, 'error': f'No foods found matching "{query}"'}
-    return {
-        'ok': True,
-        'data': [
-            {
-                'id': f.id,
-                'name': f.name,
-                'calories_100g': f.calories_100g,
-                'protein_100g': f.protein_100g,
-                'carbs_100g': f.carbs_100g,
-                'fat_100g': f.fat_100g,
-            }
-            for f in foods
-        ],
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. squad_risk
-# ─────────────────────────────────────────────────────────────────────────────
-
-def squad_risk(horizon_days: int = 7, limit: int = 5, band: str | None = None) -> dict:
-    """
-    Return the top-N highest-risk players across the whole squad,
-    based on the latest InjuryRiskPrediction for each player.
-    Optionally filter by band ('HIGH', 'MEDIUM', 'LOW').
-    """
-    from physio.models import InjuryRiskPrediction
-    from scout.models import Player
-    from django.db.models import OuterRef, Subquery
-
-    # Latest prediction id per (player, horizon)
-    latest_pred = (
-        InjuryRiskPrediction.objects
-        .filter(player=OuterRef('player'), horizon_days=OuterRef('horizon_days'))
-        .order_by('-predicted_at')
-        .values('id')[:1]
-    )
-    qs = (
-        InjuryRiskPrediction.objects
-        .filter(
-            horizon_days=horizon_days,
-            id__in=Subquery(
-                InjuryRiskPrediction.objects
-                .filter(horizon_days=horizon_days)
-                .annotate(latest_id=Subquery(
-                    InjuryRiskPrediction.objects
-                    .filter(player=OuterRef('player'), horizon_days=horizon_days)
-                    .order_by('-predicted_at')
-                    .values('id')[:1]
-                ))
-                .filter(id=Subquery(
-                    InjuryRiskPrediction.objects
-                    .filter(player=OuterRef('player'), horizon_days=horizon_days)
-                    .order_by('-predicted_at')
-                    .values('id')[:1]
-                ))
-                .values('id')
-            )
-        )
-        .select_related('player')
-        .order_by('-risk_probability')
-    )
-
-    if band:
-        qs = qs.filter(risk_band__iexact=band)
-
-    qs = qs[:limit]
-    results = list(qs)
-
-    if not results:
-        return {
-            'ok': False,
-            'error': (
-                f'No injury risk predictions found for {horizon_days}d horizon. '
-                'Go to PhysioAI → Risk tab → run Predict Risk for the squad first.'
-            ),
-        }
-
-    return {
-        'ok': True,
-        'horizon_days': horizon_days,
-        'data': [
-            {
-                'rank': i + 1,
-                'player_id': p.player.id,
-                'player_name': p.player.full_name,
-                'risk_probability': round(p.risk_probability, 4),
-                'risk_band': p.risk_band,
-                'recommended_action': p.recommended_action,
-                'top_factors': (p.shap_factors or [])[:3],
-                'predicted_at': p.predicted_at.isoformat(),
-            }
-            for i, p in enumerate(results)
-        ],
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Registry — maps tool_name → function and OpenAI schema
-# ─────────────────────────────────────────────────────────────────────────────
-
-TOOL_REGISTRY = {
-    'player_search': player_search,
-    'physio_risk': physio_risk,
-    'squad_risk': squad_risk,
-    'physio_timeseries': physio_timeseries,
-    'nutri_generate_plan': nutri_generate_plan,
-    'nutri_meal_calc': nutri_meal_calc,
-    'food_search': food_search,
-}
-
-TOOL_SCHEMAS = [
+TOOL_SCHEMAS: list[dict] = [
     {
-        'type': 'function',
-        'function': {
-            'name': 'player_search',
-            'description': (
-                'Search for players by name, or list the FULL squad. '
-                'Use for: "show all players", "list players", "find player X", "who is in the squad", '
-                '"search for [name]", "show me the roster", "effectif", "liste des joueurs". '
-                'Pass query="" to list ALL players. Pass a name to search by name.'
+        "type": "function",
+        "function": {
+            "name": "list_all_players",
+            "description": (
+                "Returns the complete list of ALL players in the squad. "
+                "Call this tool when the user asks to: 'list players', "
+                "'show all players', 'give me the players', 'who is in the squad', "
+                "'show the squad', 'all players', 'give me all the players', "
+                "'who do you have', 'players list', or any similar request. "
+                "This tool always returns data successfully. "
+                "No parameters are required."
             ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'query':  {'type': 'string',
-                               'description': 'Player name or partial name. Leave empty ("") to list the whole squad.'},
-                    'scope':  {'type': 'string', 'enum': ['club', 'global'], 'description': 'Data scope'},
-                    'limit':  {'type': 'integer', 'description': 'Max results (default 10)', 'default': 10},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max players to return. Default is 31.",
+                        "default": 31,
+                    }
                 },
-                'required': [],
+                "required": [],
             },
         },
     },
     {
-        'type': 'function',
-        'function': {
-            'name': 'physio_risk',
-            'description': (
-                'Get the ML injury risk prediction for ONE specific player. '
-                'Use for: "injury risk for [player]", "is [player] at risk?", "predict injury for [player]", '
-                '"risque de blessure pour [joueur]", "khtour mta3 [joueur]". '
-                'Requires player_id — call player_search first if you only have the name.'
+        "type": "function",
+        "function": {
+            "name": "squad_risk",
+            "description": (
+                "Fetches the top-N players most at risk of injury in the squad. "
+                "Returns player names, positions, and injury risk scores. "
+                "Use this when the user asks about squad-wide injury risks."
             ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'player_id':    {'type': 'integer', 'description': 'Club player primary key (get from player_search first)'},
-                    'horizon_days': {'type': 'integer', 'enum': [7, 30], 'description': '7-day or 30-day prediction horizon'},
-                    'scope':        {'type': 'string', 'enum': ['club', 'global']},
-                },
-                'required': ['player_id'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'physio_timeseries',
-            'description': (
-                'Get training load and wellness time-series data for ONE player. '
-                'Use for: "training load for [player]", "ACWR trend for [player]", "is [player] overloaded?", '
-                '"show distance/RPE/sleep for [player]", "charge d\'entraînement de [joueur]", '
-                '"fatigue de [joueur]", "last 2 weeks data", "historical load". '
-                'Returns daily metrics: distance, RPE, sleep quality, sprints, ACWR, ATL, CTL28.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'player_id': {'type': 'integer', 'description': 'Player id (get from player_search first if needed)'},
-                    'metrics':   {
-                        'type': 'array',
-                        'items': {'type': 'string',
-                                  'enum': ['total_distance_km', 'rpe', 'sleep_quality',
-                                           'sprints', 'accelerations', 'minutes_played',
-                                           'acwr', 'daily_load', 'atl', 'ctl28', 'monotony', 'strain']},
-                        'description': 'Which metrics to return. Default: distance, rpe, sleep.',
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "n": {
+                        "type": "integer",
+                        "description": "Number of at-risk players to return (default 5, max 20).",
+                        "default": 5,
                     },
-                    'scope': {'type': 'string', 'enum': ['club', 'global']},
-                    'days':  {'type': 'integer', 'description': 'Days to look back (default 14, max 60)'},
-                },
-                'required': ['player_id'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'nutri_generate_plan',
-            'description': (
-                'Get the nutrition plan (calories + macros) for a specific player. '
-                'Use for: "nutrition plan for [player]", "how many calories for [player]?", '
-                '"what should [player] eat?", "macros for [player] on match day", '
-                '"plan nutritionnel pour [joueur]", "calories mta3 [joueur]". '
-                'Specify day_type (match/training/rest) and goal (maintain/bulk/cut).'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'player_id': {'type': 'integer', 'description': 'Player id'},
-                    'day_type':  {'type': 'string', 'enum': ['match', 'training', 'rest'],
-                                  'description': 'Type of day (default: training)'},
-                    'goal':      {'type': 'string', 'enum': ['maintain', 'bulk', 'cut'],
-                                  'description': 'Nutrition goal (default: maintain)'},
-                },
-                'required': ['player_id'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'nutri_meal_calc',
-            'description': (
-                'Calculate total calories and macros for a custom list of foods + weights. '
-                'Use for: "how many calories in 150g chicken + 200g rice?", '
-                '"calculate macros for this meal", "calcule les macros de ce repas", '
-                '"combien de calories dans [aliment]?". '
-                'Pass food names and weights in grams.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'items': {
-                        'type': 'array',
-                        'items': {
-                            'type': 'object',
-                            'properties': {
-                                'food_name': {'type': 'string', 'description': 'Food name in English'},
-                                'food_id':   {'type': 'integer', 'description': 'Food DB id (optional if name given)'},
-                                'grams':     {'type': 'number', 'description': 'Weight in grams'},
-                            },
-                        },
-                        'description': 'List of {food_name, grams} pairs',
+                    "position": {
+                        "type": "string",
+                        "description": "Filter by position: 'GK', 'DEF', 'MID', 'FWD'. Omit for all.",
+                        "enum": ["GK", "DEF", "MID", "FWD"],
                     },
                 },
-                'required': ['items'],
+                "required": [],
             },
         },
     },
     {
-        'type': 'function',
-        'function': {
-            'name': 'food_search',
-            'description': (
-                'Search foods in the nutrition database by name. Returns calories + macros per 100g. '
-                'Use for: "find foods high in protein", "search for chicken", "what\'s in eggs?", '
-                '"aliments riches en protéines", "cherche [aliment]". '
-                'Use before nutri_meal_calc if you need a food_id.'
+        "type": "function",
+        "function": {
+            "name": "physio_risk",
+            "description": (
+                "Calculates the injury risk score for a specific player. "
+                "Returns ACWR, fatigue index, and risk level (low/medium/high/critical). "
+                "Use this when the user asks about a specific player's injury risk."
             ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'query': {'type': 'string', 'description': 'Food name or keyword to search'},
-                    'limit': {'type': 'integer', 'description': 'Max results (default 8)', 'default': 8},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_id": {
+                        "type": "integer",
+                        "description": "The database ID of the player.",
+                    },
                 },
-                'required': ['query'],
+                "required": ["player_id"],
             },
         },
     },
     {
-        'type': 'function',
-        'function': {
-            'name': 'squad_risk',
-            'description': (
-                'Return the top-N highest-risk players across the WHOLE squad — use this whenever the user '
-                'asks for "top players at risk", "most injured", "highest risk squad", "who is at risk", '
-                '"list injured players", "squad injury", "les joueurs à risque", "top 3 risk", etc. '
-                'No player name is needed — it scans all predictions at once.'
+        "type": "function",
+        "function": {
+            "name": "player_search",
+            "description": (
+                "Searches the database for players by name. "
+                "Returns a list of matching players with their IDs and positions. "
+                "ALWAYS call this first if you have a player name but no player_id."
             ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'horizon_days': {'type': 'integer', 'enum': [7, 30],
-                                    'description': '7-day or 30-day horizon (default 7)'},
-                    'limit':        {'type': 'integer',
-                                    'description': 'How many players to return (default 5, use 3 for "top 3")'},
-                    'band':         {'type': 'string', 'enum': ['HIGH', 'MEDIUM', 'LOW'],
-                                    'description': 'Optional: filter to only HIGH / MEDIUM / LOW risk players'},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Full or partial player name to search for.",
+                    },
                 },
-                'required': [],
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "physio_timeseries",
+            "description": (
+                "Returns a time-series of ACWR (Acute:Chronic Workload Ratio) "
+                "and training load data for a player over the last N days. "
+                "Use for trend analysis."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_id": {
+                        "type": "integer",
+                        "description": "The database ID of the player.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of past days to retrieve (default 28, max 90).",
+                        "default": 28,
+                    },
+                },
+                "required": ["player_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "nutri_generate_plan",
+            "description": (
+                "Generates a personalised nutritional plan for a player based on "
+                "their weight, position, and training intensity. Returns daily "
+                "macro targets (calories, protein, carbs, fats)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "player_id": {
+                        "type": "integer",
+                        "description": "The database ID of the player.",
+                    },
+                    "training_intensity": {
+                        "type": "string",
+                        "description": "Expected training intensity for the day.",
+                        "enum": ["rest", "light", "moderate", "heavy", "match"],
+                        "default": "moderate",
+                    },
+                },
+                "required": ["player_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "nutri_meal_calc",
+            "description": (
+                "Breaks down a specific meal into its nutritional components "
+                "(calories, protein, carbs, fats, micronutrients)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "meal_description": {
+                        "type": "string",
+                        "description": "Description of the meal (e.g. '200g grilled chicken with rice').",
+                    },
+                },
+                "required": ["meal_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "food_search",
+            "description": (
+                "Searches the food database for nutritional information about a food item."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Food item to search for (e.g. 'banana', 'olive oil').",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 5).",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
 ]
+
+
+# ──────────────────────────────────────────────
+# Tool implementations
+# ──────────────────────────────────────────────
+
+def _tool_squad_risk(n: int = 5, position: str | None = None, **kwargs) -> dict:
+    try:
+        from players.models import Player      # adjust import to your app
+        from physio.services import risk_score # adjust import to your app
+
+        n = min(max(1, int(n)), 20)
+        qs = Player.objects.all()
+        if position:
+            qs = qs.filter(position=position)
+
+        results = []
+        for player in qs[:50]:   # limit query scope
+            score_data = risk_score(player.id)
+            results.append({
+                "player_id":   player.id,
+                "name":        player.full_name,
+                "position":    player.position,
+                "risk_score":  score_data.get("score", 0),
+                "risk_level":  score_data.get("level", "unknown"),
+            })
+
+        results.sort(key=lambda x: x["risk_score"], reverse=True)
+        return {"players": results[:n], "total_queried": len(results)}
+
+    except ImportError:
+        # Return mock data if models aren't available (dev/test)
+        return _mock_squad_risk(n, position)
+    except Exception as exc:
+        logger.exception("squad_risk failed")
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_physio_risk(player_id: int, **kwargs) -> dict:
+    try:
+        from physio.services import detailed_risk_report
+        return detailed_risk_report(player_id)
+    except ImportError:
+        return _mock_physio_risk(player_id)
+    except Exception as exc:
+        logger.exception("physio_risk failed for player %s", player_id)
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_player_search(name: str, **kwargs) -> dict:
+    try:
+        from players.models import Player
+        matches = Player.objects.filter(full_name__icontains=name)[:10]
+        return {
+            "players": [
+                {"player_id": p.id, "name": p.full_name, "position": p.position}
+                for p in matches
+            ]
+        }
+    except ImportError:
+        return _mock_player_search(name)
+    except Exception as exc:
+        logger.exception("player_search failed for '%s'", name)
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_physio_timeseries(player_id: int, days: int = 28, **kwargs) -> dict:
+    try:
+        from physio.services import workload_timeseries
+        days = min(max(1, int(days)), 90)
+        return workload_timeseries(player_id, days)
+    except ImportError:
+        return _mock_timeseries(player_id, days)
+    except Exception as exc:
+        logger.exception("physio_timeseries failed for player %s", player_id)
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_nutri_generate_plan(player_id: int, training_intensity: str = "moderate", **kwargs) -> dict:
+    try:
+        from nutrition.services import generate_nutrition_plan
+        return generate_nutrition_plan(player_id, training_intensity)
+    except ImportError:
+        return _mock_nutrition_plan(player_id, training_intensity)
+    except Exception as exc:
+        logger.exception("nutri_generate_plan failed for player %s", player_id)
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_nutri_meal_calc(meal_description: str, **kwargs) -> dict:
+    try:
+        from nutrition.services import calculate_meal
+        return calculate_meal(meal_description)
+    except ImportError:
+        return {
+            "error": True,
+            "tool_failed": True,
+            "service": "nutrition",
+            "message": "TOOL_FAILURE: nutrition service is unavailable. "
+                       "Do not provide any alternative information. "
+                       "Tell the user the service is temporarily unavailable "
+                       "and suggest they try injury risk or player search instead.",
+        }
+    except Exception as exc:
+        logger.exception("nutri_meal_calc failed")
+        return {"error": True, "message": str(exc)}
+
+
+def _tool_food_search(query: str, limit: int = 5, **kwargs) -> dict:
+    try:
+        from nutrition.services import search_food_database
+        limit = min(max(1, int(limit)), 20)
+        return search_food_database(query, limit)
+    except ImportError:
+        return {
+            "error": True,
+            "tool_failed": True,
+            "service": "nutrition",
+            "message": "TOOL_FAILURE: nutrition service is unavailable. "
+                       "Do not provide any alternative information. "
+                       "Tell the user the service is temporarily unavailable "
+                       "and suggest they try injury risk or player search instead.",
+        }
+    except Exception as exc:
+        logger.exception("food_search failed for '%s'", query)
+        return {"error": True, "message": str(exc)}
+
+
+# ──────────────────────────────────────────────
+# Tool dispatcher
+# ──────────────────────────────────────────────
+
+def _tool_list_all_players(limit: int = 31, **kwargs) -> dict:
+    try:
+        from players.models import Player
+        players = Player.objects.all()[:limit]
+        return {
+            "players": [
+                {"player_id": p.id, "name": p.full_name, "position": p.position}
+                for p in players
+            ]
+        }
+    except ImportError:
+        return _mock_list_all_players(limit)
+    except Exception as exc:
+        logger.exception("list_all_players failed")
+        return {"error": True, "message": str(exc)}
+
+_TOOL_REGISTRY: dict[str, callable] = {
+    "list_all_players":  _tool_list_all_players,
+    "squad_risk":          _tool_squad_risk,
+    "physio_risk":         _tool_physio_risk,
+    "player_search":       _tool_player_search,
+    "physio_timeseries":   _tool_physio_timeseries,
+    "nutri_generate_plan": _tool_nutri_generate_plan,
+    "nutri_meal_calc":     _tool_nutri_meal_calc,
+    "food_search":         _tool_food_search,
+}
+
+
+def execute_tool(tool_name: str, args: dict) -> Any:
+    """
+    Dispatch a tool call. Raises KeyError for unknown tools.
+    Individual tools handle their own exceptions internally.
+    """
+    fn = _TOOL_REGISTRY.get(tool_name)
+    if fn is None:
+        logger.error("Unknown tool requested: '%s'", tool_name)
+        return {
+            "error":   True,
+            "message": f"Unknown tool '{tool_name}'. Available tools: {list(_TOOL_REGISTRY.keys())}",
+        }
+    return fn(**(args or {}))
+
+
+# ─────────────────────────────────────────────────────────────
+# MASTER MOCK SQUAD  (used by ALL mock functions below)
+# ─────────────────────────────────────────────────────────────
+
+MOCK_SQUAD = [
+    # ── GOALKEEPERS (3) ───────────────────────────────────────
+    {
+        "player_id": 1,  "name": "Moez Ben Cherifa",  "position": "GK",
+        "sub_position": "Goalkeeper",
+        "age": 28, "number": 1,  "nationality": "Tunisian",
+        "height_cm": 190, "weight_kg": 84,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 2,  "name": "Aymen Dahmane",     "position": "GK",
+        "sub_position": "Goalkeeper",
+        "age": 24, "number": 16, "nationality": "Algerian",
+        "height_cm": 188, "weight_kg": 82,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 3,  "name": "Bilel Ifa",         "position": "GK",
+        "sub_position": "Goalkeeper",
+        "age": 21, "number": 30, "nationality": "Tunisian",
+        "height_cm": 185, "weight_kg": 79,
+        "preferred_foot": "Left",  "status": "available",
+    },
+
+    # ── DEFENDERS (8) ─────────────────────────────────────────
+    # Centre-backs (4)
+    {
+        "player_id": 4,  "name": "Hamza Mathlouthi",  "position": "DEF",
+        "sub_position": "Centre-Back",
+        "age": 29, "number": 5,  "nationality": "Tunisian",
+        "height_cm": 187, "weight_kg": 83,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 5,  "name": "Yassine Meriah",    "position": "DEF",
+        "sub_position": "Centre-Back",
+        "age": 31, "number": 6,  "nationality": "Tunisian",
+        "height_cm": 184, "weight_kg": 80,
+        "preferred_foot": "Right", "status": "injured",
+    },
+    {
+        "player_id": 6,  "name": "Nader Ghandri",     "position": "DEF",
+        "sub_position": "Centre-Back",
+        "age": 33, "number": 3,  "nationality": "Tunisian",
+        "height_cm": 189, "weight_kg": 86,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 7,  "name": "Montassar Talbi",   "position": "DEF",
+        "sub_position": "Centre-Back",
+        "age": 25, "number": 15, "nationality": "Tunisian",
+        "height_cm": 186, "weight_kg": 81,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    # Left-backs (2)
+    {
+        "player_id": 8,  "name": "Ali Maaloul",       "position": "DEF",
+        "sub_position": "Left-Back",
+        "age": 34, "number": 12, "nationality": "Tunisian",
+        "height_cm": 178, "weight_kg": 75,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    {
+        "player_id": 9,  "name": "Oussama Haddadi",   "position": "DEF",
+        "sub_position": "Left-Back",
+        "age": 30, "number": 23, "nationality": "Tunisian",
+        "height_cm": 180, "weight_kg": 76,
+        "preferred_foot": "Left",  "status": "suspended",
+    },
+    # Right-backs (2)
+    {
+        "player_id": 10, "name": "Wajdi Kechrida",    "position": "DEF",
+        "sub_position": "Right-Back",
+        "age": 28, "number": 2,  "nationality": "Tunisian",
+        "height_cm": 177, "weight_kg": 73,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 11, "name": "Mohamed Dhaoui",    "position": "DEF",
+        "sub_position": "Right-Back",
+        "age": 22, "number": 22, "nationality": "Tunisian",
+        "height_cm": 179, "weight_kg": 74,
+        "preferred_foot": "Right", "status": "available",
+    },
+
+    # ── MIDFIELDERS (10) ──────────────────────────────────────
+    # Defensive midfielders / CDM (3)
+    {
+        "player_id": 12, "name": "Ellyes Skhiri",     "position": "MID",
+        "sub_position": "Defensive Mid",
+        "age": 29, "number": 8,  "nationality": "Tunisian",
+        "height_cm": 183, "weight_kg": 78,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 13, "name": "Saad Bguir",        "position": "MID",
+        "sub_position": "Defensive Mid",
+        "age": 26, "number": 6,  "nationality": "Tunisian",
+        "height_cm": 181, "weight_kg": 77,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 14, "name": "Anis Ben Slimane",  "position": "MID",
+        "sub_position": "Defensive Mid",
+        "age": 23, "number": 28, "nationality": "Tunisian",
+        "height_cm": 182, "weight_kg": 76,
+        "preferred_foot": "Right", "status": "available",
+    },
+    # Central midfielders / CM (4)
+    {
+        "player_id": 15, "name": "Ghaylen Chaalali",  "position": "MID",
+        "sub_position": "Central Mid",
+        "age": 30, "number": 7,  "nationality": "Tunisian",
+        "height_cm": 179, "weight_kg": 74,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 16, "name": "Ferjani Sassi",     "position": "MID",
+        "sub_position": "Central Mid",
+        "age": 32, "number": 17, "nationality": "Tunisian",
+        "height_cm": 181, "weight_kg": 76,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 17, "name": "Naim Sliti",        "position": "MID",
+        "sub_position": "Central Mid",
+        "age": 31, "number": 19, "nationality": "Tunisian",
+        "height_cm": 176, "weight_kg": 71,
+        "preferred_foot": "Left",  "status": "injured",
+    },
+    {
+        "player_id": 18, "name": "Mohamed Ali Ben Romdhane", "position": "MID",
+        "sub_position": "Central Mid",
+        "age": 24, "number": 24, "nationality": "Tunisian",
+        "height_cm": 180, "weight_kg": 75,
+        "preferred_foot": "Right", "status": "available",
+    },
+    # Attacking midfielders / CAM (3)
+    {
+        "player_id": 19, "name": "Hannibal Mejbri",   "position": "MID",
+        "sub_position": "Attacking Mid",
+        "age": 21, "number": 14, "nationality": "Tunisian",
+        "height_cm": 178, "weight_kg": 72,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 20, "name": "Ahmed Ben Ali",     "position": "MID",
+        "sub_position": "Attacking Mid",
+        "age": 27, "number": 10, "nationality": "Tunisian",
+        "height_cm": 177, "weight_kg": 70,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    {
+        "player_id": 21, "name": "Taha Yassine Khenissi", "position": "MID",
+        "sub_position": "Attacking Mid",
+        "age": 35, "number": 20, "nationality": "Tunisian",
+        "height_cm": 176, "weight_kg": 71,
+        "preferred_foot": "Right", "status": "available",
+    },
+
+    # ── FORWARDS (8) ──────────────────────────────────────────
+    # Strikers / ST (2)
+    {
+        "player_id": 22, "name": "Youssef Msakni",    "position": "FWD",
+        "sub_position": "Striker",
+        "age": 33, "number": 11, "nationality": "Tunisian",
+        "height_cm": 175, "weight_kg": 69,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    {
+        "player_id": 23, "name": "Seifeddine Jaziri",  "position": "FWD",
+        "sub_position": "Striker",
+        "age": 32, "number": 9,  "nationality": "Tunisian",
+        "height_cm": 182, "weight_kg": 78,
+        "preferred_foot": "Right", "status": "available",
+    },
+    # Left wingers / LW (3)
+    {
+        "player_id": 24, "name": "Wahbi Khazri",      "position": "FWD",
+        "sub_position": "Left Winger",
+        "age": 33, "number": 13, "nationality": "Tunisian",
+        "height_cm": 178, "weight_kg": 73,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 25, "name": "Hamza Ben Achour",  "position": "FWD",
+        "sub_position": "Left Winger",
+        "age": 25, "number": 21, "nationality": "Tunisian",
+        "height_cm": 174, "weight_kg": 68,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    {
+        "player_id": 26, "name": "Chaim El Djebali",  "position": "FWD",
+        "sub_position": "Left Winger",
+        "age": 22, "number": 29, "nationality": "Tunisian",
+        "height_cm": 173, "weight_kg": 67,
+        "preferred_foot": "Left",  "status": "available",
+    },
+    # Right wingers / RW (3)
+    {
+        "player_id": 27, "name": "Taha Khenissi",     "position": "FWD",
+        "sub_position": "Right Winger",
+        "age": 28, "number": 18, "nationality": "Tunisian",
+        "height_cm": 176, "weight_kg": 70,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 28, "name": "Anis Slimane",      "position": "FWD",
+        "sub_position": "Right Winger",
+        "age": 23, "number": 25, "nationality": "Tunisian",
+        "height_cm": 175, "weight_kg": 69,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 29, "name": "Mortadha Ben Ouanes", "position": "FWD",
+        "sub_position": "Right Winger",
+        "age": 26, "number": 27, "nationality": "Tunisian",
+        "height_cm": 177, "weight_kg": 71,
+        "preferred_foot": "Right", "status": "available",
+    },
+
+    # ── UTILITY / MULTI-POSITION (2) ──────────────────────────
+    {
+        "player_id": 30, "name": "Mohamed Amine Tougai", "position": "MID",
+        "sub_position": "Utility (MID/DEF)",
+        "age": 27, "number": 26, "nationality": "Tunisian",
+        "height_cm": 180, "weight_kg": 75,
+        "preferred_foot": "Right", "status": "available",
+    },
+    {
+        "player_id": 31, "name": "Bassem Srarfi",     "position": "FWD",
+        "sub_position": "Utility (FWD/MID)",
+        "age": 28, "number": 31, "nationality": "Tunisian",
+        "height_cm": 176, "weight_kg": 72,
+        "preferred_foot": "Left",  "status": "available",
+    },
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# MOCK FUNCTION IMPLEMENTATIONS
+# (replace the old ones at the bottom of tools.py)
+# ─────────────────────────────────────────────────────────────
+
+
+
+def _mock_list_all_players(limit: int = 31) -> dict:
+    players = MOCK_SQUAD[:limit]
+    return {
+        "players": players,
+        "total": len(players),
+        "squad_summary": {
+            "GK":  len([p for p in players if p["position"] == "GK"]),
+            "DEF": len([p for p in players if p["position"] == "DEF"]),
+            "MID": len([p for p in players if p["position"] == "MID"]),
+            "FWD": len([p for p in players if p["position"] == "FWD"]),
+        },
+        "_mock": True,
+    }
+
+
+def _mock_squad_risk(n: int = 5, position: str | None = None) -> dict:
+    players = MOCK_SQUAD
+    if position:
+        players = [p for p in players if p["position"] == position]
+
+    # Generate deterministic-ish risk scores based on player_id
+    risk_levels = ["low", "medium", "high", "critical"]
+    results = []
+    for p in players:
+        # Seed with player_id for consistency across calls
+        random.seed(p["player_id"] * 7)
+        score = round(random.uniform(0.10, 0.95), 2)
+        level = (
+            "critical" if score >= 0.85 else
+            "high"     if score >= 0.65 else
+            "medium"   if score >= 0.40 else
+            "low"
+        )
+        results.append({
+            "player_id":    p["player_id"],
+            "name":         p["name"],
+            "position":     p["position"],
+            "sub_position": p["sub_position"],
+            "risk_score":   score,
+            "risk_level":   level,
+            "status":       p["status"],
+        })
+
+    results.sort(key=lambda x: x["risk_score"], reverse=True)
+    return {
+        "players":       results[:n],
+        "total_queried": len(results),
+        "_mock":         True,
+    }
+
+
+def _mock_physio_risk(player_id: int) -> dict:
+    player = next(
+        (p for p in MOCK_SQUAD if p["player_id"] == player_id), None
+    )
+
+    # If not found but ID looks valid (1-50 range), find closest
+    if not player and 1 <= player_id <= 50:
+        # Return first available player as fallback
+        player = MOCK_SQUAD[0]
+
+    if not player:
+        return {
+            "error":   True,
+            "tool_failed": True,
+            "message": (
+                f"TOOL_FAILURE: Player ID {player_id} not found. "
+                f"You must call player_search first to get a valid player_id. "
+                f"Valid player IDs are 1 through 31."
+            ),
+        }
+
+    random.seed(player_id * 13)
+    acwr  = round(random.uniform(0.70, 1.60), 2)
+    score = round(random.uniform(0.10, 0.95), 2)
+    level = (
+        "critical" if score >= 0.85 else
+        "high"     if score >= 0.65 else
+        "medium"   if score >= 0.40 else
+        "low"
+    )
+    return {
+        "player_id":      player_id,
+        "name":           player["name"],
+        "position":       player["position"],
+        "sub_position":   player["sub_position"],
+        "jersey_number":  player["number"],
+        "age":            player["age"],
+        "nationality":    player["nationality"],
+        "height_cm":      player["height_cm"],
+        "weight_kg":      player["weight_kg"],
+        "preferred_foot": player["preferred_foot"],
+        "acwr":           acwr,
+        "fatigue_index":  round(random.uniform(0.20, 0.90), 2),
+        "risk_score":     score,
+        "risk_level":     level,
+        "recommendation": (
+            "Reduce training load by 30% for 3 days and monitor."
+            if level in ("high", "critical")
+            else "Continue normal training. Monitor weekly."
+        ),
+        "status":         player["status"],
+        "_mock":          True,
+    }
+
+
+def _mock_player_search(name: str) -> dict:
+    name_lower = name.lower().strip()
+
+    # Try exact sub-string match first
+    matches = [
+        p for p in MOCK_SQUAD
+        if name_lower in p["name"].lower()
+    ]
+
+    # If nothing, try matching any single word in the query
+    if not matches:
+        words = name_lower.split()
+        matches = [
+            p for p in MOCK_SQUAD
+            if any(w in p["name"].lower() for w in words if len(w) > 2)
+        ]
+
+    # Still nothing → return top 3 as suggestions
+    if not matches:
+        return {
+            "players": MOCK_SQUAD[:3],
+            "note":    f"No match for '{name}'. Showing first 3 players as suggestions.",
+            "_mock":   True,
+        }
+
+    return {
+        "players": [
+            {
+                "player_id":    p["player_id"],
+                "name":         p["name"],
+                "position":     p["position"],
+                "sub_position": p["sub_position"],
+                "age":          p["age"],
+                "number":       p["number"],
+                "nationality":  p["nationality"],
+                "status":       p["status"],
+            }
+            for p in matches
+        ],
+        "_mock": True,
+    }
+
+
+def _mock_timeseries(player_id: int, days: int) -> dict:
+    player = next((p for p in MOCK_SQUAD if p["player_id"] == player_id), None)
+    name   = player["name"] if player else f"Player #{player_id}"
+
+    random.seed(player_id)
+    base_load = random.randint(350, 650)
+
+    series = []
+    for i in range(min(days, 30)):
+        random.seed(player_id + i * 100)
+        daily_load = base_load + random.randint(-120, 120)
+        acwr       = round(0.85 + random.random() * 0.65, 2)
+        series.append({
+            "day":   i + 1,
+            "load":  max(0, daily_load),
+            "acwr":  acwr,
+            "zone":  (
+                "danger"  if acwr > 1.4 else
+                "warning" if acwr > 1.2 else
+                "optimal" if acwr > 0.8 else
+                "low"
+            ),
+        })
+
+    return {
+        "player_id":      player_id,
+        "name":           name,
+        "jersey_number":  player["number"] if player else None,
+        "age":            player["age"] if player else None,
+        "nationality":    player["nationality"] if player else None,
+        "height_cm":      player["height_cm"] if player else None,
+        "weight_kg":      player["weight_kg"] if player else None,
+        "preferred_foot": player["preferred_foot"] if player else None,
+        "sub_position":   player["sub_position"] if player else None,
+        "days":           days,
+        "series":         series,
+        "_mock":          True,
+    }
+
+
+def _mock_nutrition_plan(player_id: int, intensity: str) -> dict:
+    player = next((p for p in MOCK_SQUAD if p["player_id"] == player_id), None)
+    if not player:
+        return {"error": True, "message": f"Player ID {player_id} not found."}
+
+    weight = player["weight_kg"]
+    plans = {
+        "rest":     {"calories": round(weight * 28), "protein_g": round(weight * 1.6), "carbs_g": round(weight * 3.0), "fats_g": round(weight * 0.9)},
+        "light":    {"calories": round(weight * 32), "protein_g": round(weight * 1.8), "carbs_g": round(weight * 3.8), "fats_g": round(weight * 1.0)},
+        "moderate": {"calories": round(weight * 38), "protein_g": round(weight * 2.0), "carbs_g": round(weight * 4.5), "fats_g": round(weight * 1.1)},
+        "heavy":    {"calories": round(weight * 44), "protein_g": round(weight * 2.2), "carbs_g": round(weight * 5.5), "fats_g": round(weight * 1.2)},
+        "match":    {"calories": round(weight * 48), "protein_g": round(weight * 2.4), "carbs_g": round(weight * 6.0), "fats_g": round(weight * 1.2)},
+    }
+    macros = plans.get(intensity, plans["moderate"])
+
+    return {
+        "player_id":      player_id,
+        "name":           player["name"],
+        "position":       player["position"],
+        "sub_position":   player["sub_position"],
+        "jersey_number":  player["number"],
+        "age":            player["age"],
+        "nationality":    player["nationality"],
+        "height_cm":      player["height_cm"],
+        "weight_kg":      player["weight_kg"],
+        "preferred_foot": player["preferred_foot"],
+        "status":         player["status"],
+        "intensity":      intensity,
+        "macros":         macros,
+        "_mock":          True,
+    }

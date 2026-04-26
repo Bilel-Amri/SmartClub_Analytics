@@ -3,13 +3,13 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+ARG INSTALL_ML_DEPS=0
+
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-ml.txt ./
+RUN pip install --no-cache-dir -q -r requirements.txt && \
+    if [ "$INSTALL_ML_DEPS" = "1" ]; then pip install --no-cache-dir -q -r requirements-ml.txt; fi
 
 COPY . .
 

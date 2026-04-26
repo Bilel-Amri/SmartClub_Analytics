@@ -217,9 +217,18 @@ function RecoveryBanner({ recovery }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function LiveFeedbackBanner({ feedback }) {
-  if (!feedback || !feedback.dinner_adjustment) return null;
+  if (!feedback) return null;
+  
+  if (!feedback.dinner_adjustment) {
+    return (
+      <div style={{ background: '#1e293b', border: '1px solid #475569', borderRadius: 10, padding: '12px 16px', marginTop: 14 }}>
+        <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>{feedback.note}</p>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ background: '#0d1f3b', border: '1.5px solid #3b82f6', borderRadius: 10, padding: '12px 16px', marginBottom: 14 }}>
+    <div style={{ background: '#0d1f3b', border: '1.5px solid #3b82f6', borderRadius: 10, padding: '12px 16px', marginTop: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <Zap size={16} color="#3b82f6" />
         <span style={{ fontWeight: 700, color: '#3b82f6', fontSize: 13 }}>Live Dinner Update — Extra CHO Required</span>
@@ -690,16 +699,6 @@ export default function NutriAI() {
                 </div>
 
                 <div className="form-row">
-                  {GOALS.map(g => (
-                    <button key={g} type="button"
-                      onClick={() => setPlanForm(f => ({ ...f, goal: g }))}
-                      style={{
-                        flex: 1, padding: '7px', borderRadius: 6, cursor: 'pointer', fontWeight: 700,
-                        fontSize: 12, border: `2px solid ${planForm.goal === g ? GOAL_COLOR[g] : C.border}`,
-                        background: planForm.goal === g ? GOAL_COLOR[g] + '22' : 'transparent',
-                        color: planForm.goal === g ? GOAL_COLOR[g] : C.muted, textTransform: 'capitalize',
-                      }}>{g}</button>
-                  ))}
                   <select value={planForm.sex} onChange={e => setPlanForm(f => ({ ...f, sex: e.target.value }))} style={{ maxWidth: 80 }}>
                     <option value="M">Male</option>
                     <option value="F">Female</option>

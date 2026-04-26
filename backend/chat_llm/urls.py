@@ -1,7 +1,9 @@
 from django.urls import path
-from .views import ChatLLMView, ChatLLMStreamView
+from . import views
 
 urlpatterns = [
-    path('', ChatLLMView.as_view(), name='chat-llm'),
-    path('stream/', ChatLLMStreamView.as_view(), name='chat-llm-stream'),
+    path("",         views.chat,         name="chat"),
+    path("stream/",  views.chat_stream,  name="chat_stream"),
+    path("reset/",   views.reset_chat,   name="chat_reset"),
+    path("history/", views.chat_history, name="chat_history"),
 ]

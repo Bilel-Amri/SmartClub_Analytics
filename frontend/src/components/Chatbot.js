@@ -1,6 +1,8 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import { getAccessToken } from '../auth';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// --- Constants ---------------------------------------------------------------
 
 const LANGUAGES = [
   { code: 'auto', label: 'Auto' },
@@ -11,19 +13,29 @@ const LANGUAGES = [
 ];
 
 const QUICK_CHIPS = [
-  { label: '🔴 Risk 7d',    message: 'Predict injury risk 7 days for {{player}}' },
-  { label: '📅 Risk 30d',   message: 'Predict injury risk 30 days for {{player}}' },
-  { label: '📈 ACWR Trend', message: 'Show ACWR and training load trend for {{player}}' },
-  { label: '🥗 Nutrition',  message: 'Generate nutrition plan for {{player}} training day' },
-  { label: '🍽️ Meal Calc',  message: 'Calculate: chicken breast 150g, rice 200g, broccoli 100g' },
-  { label: '👥 Squad',      message: 'Squad overview' },
+  { label: "Top risks (7 days)",    message: "Show me the top 5 players most at risk of injury in the last 7 days" },
+  { label: "Top risks (30 days)",   message: "Show me the top 5 players most at risk of injury in the last 30 days" },
+  { label: "ACWR trend",            message: "Show me the ACWR training load trend for the squad" },
+  { label: "Nutrition plan",        message: "Generate a nutrition plan for today's training session" },
+  { label: "Meal calculator",       message: "Calculate the macros for a specific meal" },
+  { label: "Squad overview",        message: "Give me a full overview of the squad's current injury risk status" },
 ];
 
 const RTL_LANGS = new Set(['ar', 'tn']);
 
 const SESSION_KEY = 'smartclub_chat_session_id';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const TOOL_LABELS = {
+  squad_risk:          "squad injury data",
+  physio_risk:         "player risk analysis",
+  player_search:       "player profile",
+  physio_timeseries:   "training load history",
+  nutri_generate_plan: "nutrition plan",
+  nutri_meal_calc:     "meal breakdown",
+  food_search:         "food database",
+};
+
+// --- Helpers -----------------------------------------------------------------
 
 function formatTs(iso) {
   const d = new Date(iso);
@@ -49,7 +61,7 @@ function bandColor(band) {
   return '#22c55e';
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// --- Sub-components ----------------------------------------------------------
 
 function RiskCard({ grounding }) {
   if (!grounding?.risk_probability) return null;
@@ -132,7 +144,7 @@ function ToolTrace({ toolCalls, grounding }) {
           display: 'flex', alignItems: 'center', gap: '4px',
         }}
       >
-        {open ? '▼' : '▶'} How I answered ({toolCalls.length} tool call{toolCalls.length > 1 ? 's' : ''})
+        {open ? '🔽' : '▶️'} How I answered ({toolCalls.length} tool call{toolCalls.length > 1 ? 's' : ''})
       </button>
       {open && (
         <div style={{
@@ -142,7 +154,7 @@ function ToolTrace({ toolCalls, grounding }) {
         }}>
           {toolCalls.map((tc, i) => (
             <div key={i} style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-              <span style={{ color: tc.ok ? '#22c55e' : '#ef4444' }}>{tc.ok ? '✓' : '✗'}</span>
+              <span style={{ color: tc.ok ? '#22c55e' : '#ef4444' }}>{tc.ok ? '✅' : '❌'}</span>
               <code style={{ color: 'var(--neon-cyan)', background: 'none' }}>{tc.tool}</code>
               {Object.entries(tc.args || {}).map(([k, v]) => (
                 <span key={k}>{k}=<em>{String(v)}</em></span>
@@ -176,21 +188,18 @@ function MessageBubble({ msg, onSelectCandidate }) {
         <div className={`chat-bubble ${isUser ? 'user-bubble' : 'bot-bubble'}`}>
           {isUser ? (
             msg.text
-          ) : msg.streaming && !msg.text ? (
-            // Still waiting for first token — show typing dots
-            <span className="typing">
-              <span className="dot" /><span className="dot" /><span className="dot" />
-            </span>
           ) : (
-            // Text streaming or complete
             <>
-              <span dangerouslySetInnerHTML={{ __html: formatReply(msg.text) }} />
-              {msg.streaming && (
-                <span style={{
-                  display: 'inline-block', width: '2px', height: '1em',
-                  background: 'var(--neon-cyan)', marginLeft: '2px',
-                  verticalAlign: 'text-bottom', animation: 'blink 1s step-end infinite',
-                }} />
+              {msg.activeTool && (
+                <div className="tool-status-chip">
+                  <span className="tool-spinner" />
+                  Fetching {TOOL_LABELS[msg.activeTool] || msg.activeTool.replace(/_/g, ' ')}...
+                </div>
+              )}
+              {msg.text && (
+                <div className="prose prose-invert max-w-none">
+                  <ReactMarkdown>{msg.text}</ReactMarkdown>
+                </div>
               )}
             </>
           )}
@@ -215,22 +224,39 @@ function MessageBubble({ msg, onSelectCandidate }) {
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// --- Main Component ----------------------------------------------------------
 
 export default function Chatbot() {
   const [messages, setMessages] = useState([{
     id: 'welcome', role: 'bot', rtl: false, ts: new Date().toISOString(),
-    text: 'Hello! 👋 I\'m **SmartClub AI** — powered by Groq (llama-3.1-8b-instant).\n\nI can:\n• Predict injury risk (7d / 30d)\n• Show training load & ACWR trends\n• Retrieve nutrition plans & meal calcs\n• Search players & supplements\n\nType *help* or pick a quick action below.',
+    text: 'Hello! 👋 I\'m **SmartClub AI**.\n\nI can:\n• Predict injury risk (7d / 30d)\n• Show training load & ACWR trends\n• Retrieve nutrition plans & meal calcs\n• Search players & supplements\n\nType *help* or pick a quick action below.',
     toolCalls: null, grounding: null, streaming: false,
   }]);
   const [input, setInput]     = useState('');
   const [loading, setLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [toast, setToast] = useState(null);
   const [language, setLanguage] = useState('auto');
   const [sessionId, setSessionId] = useState(() => localStorage.getItem(SESSION_KEY) || null);
   const [lastPlayer, setLastPlayer] = useState(null);
   const bottomRef = useRef(null);
 
   const isRtl = RTL_LANGS.has(language);
+
+  const TOAST_MESSAGES = {
+    en: "Switched to English",
+    fr: "Langue changée : Français",
+    ar: "تم التبديل إلى العربية",
+    tn: "بدلنا للدرجة التونسية"
+  };
+
+  const switchLanguage = (code) => {
+    setLanguage(code);
+    if (code !== 'auto') {
+      setToast(TOAST_MESSAGES[code] || "Language changed");
+      setTimeout(() => setToast(null), 2000);
+    }
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -249,6 +275,7 @@ export default function Chatbot() {
     const userIsRtl = RTL_LANGS.has(language);
     addMessage({ role: 'user', text: msg, rtl: userIsRtl });
     setLoading(true);
+    setIsStreaming(true);
 
     // Add an empty streaming bot message immediately
     const botId = `bot-${Date.now()}`;
@@ -258,11 +285,33 @@ export default function Chatbot() {
     }]);
 
     try {
-      const response = await fetch('/api/chat-llm/stream/', {
+      let response = await fetch('/api/chat-llm/stream/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getAccessToken()}` 
+        },
         body: JSON.stringify({ message: msg, session_id: sessionId, language }),
       });
+
+      if (response.status === 401) {
+        // Token might be expired. Let's force a silent refresh via an axios GET call
+        // then try again.
+        try {
+          const { default: axios } = await import('axios');
+          await axios.get('/api/auth/me/'); // This triggers the interceptor which refreshes token
+          response = await fetch('/api/chat-llm/stream/', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${getAccessToken()}` 
+            },
+            body: JSON.stringify({ message: msg, session_id: sessionId, language }),
+          });
+        } catch (e) {
+          // Ignore, fallback to failing gracefully
+        }
+      }
 
       if (!response.ok) {
         await response.text();
@@ -271,6 +320,7 @@ export default function Chatbot() {
             ? { ...m, text: `❌ Server error ${response.status}`, streaming: false }
             : m
         ));
+        setIsStreaming(false);
         return;
       }
 
@@ -293,6 +343,20 @@ export default function Chatbot() {
           let data;
           try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
+          // Handle new unified JSON stream format from the updated agent backend
+          if (data.type === 'tool_start') {
+            setMessages(prev => prev.map(m => m.id === botId ? { ...m, activeTool: data.data?.tool } : m));
+          } else if (data.type === 'tool_end') {
+            setMessages(prev => prev.map(m => m.id === botId ? { ...m, activeTool: null } : m));
+          } else if (data.type === 'text') {
+            data.chunk = data.data;
+          } else if (data.type === 'done') {
+            data.done = true;
+          } else if (data.type === 'error') {
+            data.chunk = "\n\n**Error:** " + data.data;
+            data.done = true; // stop stream on error
+          }
+
           // Progressive text chunk
           if (data.chunk !== undefined) {
             fullText += data.chunk;
@@ -303,10 +367,11 @@ export default function Chatbot() {
 
           // Final done event — attach metadata
           if (data.done) {
+            setIsStreaming(false);
             const lang = data.language || 'en';
             setMessages(prev => prev.map(m =>
               m.id === botId
-                ? { ...m, text: fullText || m.text, streaming: false,
+                ? { ...m, text: fullText || m.text, streaming: false, activeTool: null,
                     toolCalls: data.tool_calls || [], grounding: data.grounding || {},
                     language: lang, rtl: RTL_LANGS.has(lang) }
                 : m
@@ -322,8 +387,9 @@ export default function Chatbot() {
 
           // Error event
           if (data.error) {
+            setIsStreaming(false);
             setMessages(prev => prev.map(m =>
-              m.id === botId ? { ...m, text: `❌ ${data.error}`, streaming: false } : m
+              m.id === botId ? { ...m, text: `❌ ${data.error}`, streaming: false, activeTool: null } : m
             ));
           }
         }
@@ -331,13 +397,15 @@ export default function Chatbot() {
     } catch (err) {
       setMessages(prev => prev.map(m =>
         m.id === botId
-          ? { ...m, text: `❌ ${err.message || 'Network error'}`, streaming: false }
+          ? { ...m, text: `❌ ${err.message || 'Network error'}`, streaming: false, activeTool: null }
           : m
       ));
+      setIsStreaming(false);
     } finally {
       setLoading(false);
+      // setIsStreaming(false) is handled in the stream parsing, error catch, or ok-check to prevent race conditions showing it disabled momentarily too early due to wait-time.
     }
-  }, [input, loading, sessionId, language, isRtl, lastPlayer, addMessage]);
+  }, [input, loading, sessionId, language, isRtl, lastPlayer, addMessage, isStreaming]);
 
   const handleCandidateSelect = useCallback((candidate) => {
     setLastPlayer({ id: candidate.id, name: candidate.name });
@@ -352,28 +420,34 @@ export default function Chatbot() {
   };
 
   const handleNewSession = () => {
-    localStorage.removeItem(SESSION_KEY);
-    setSessionId(null);
-    setLastPlayer(null);
-    setMessages([{
-      id: `welcome-${Date.now()}`, role: 'bot', rtl: false, ts: new Date().toISOString(),
-      text: 'New conversation started. How can I help?',
-      toolCalls: null, grounding: null, streaming: false,
-    }]);
+    const confirmed = window.confirm("Start a new conversation? This will clear the current chat history.");
+    if (confirmed) {
+      localStorage.removeItem(SESSION_KEY);
+      setSessionId(null);
+      setLastPlayer(null);
+      setMessages([{
+        id: `welcome-${Date.now()}`, role: 'bot', rtl: false, ts: new Date().toISOString(),
+        text: 'New conversation started. How can I help?',
+        toolCalls: null, grounding: null, streaming: false,
+      }]);
+    }
   };
 
   return (
     <div className="module" dir={isRtl ? 'rtl' : 'ltr'}>
+      {toast && (
+        <div className="lang-toast">{toast}</div>
+      )}
 
-      {/* ── Header ── */}
+      {/* -- Header -- */}
       <div className="module-header chat-header" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span className="module-icon">🤖</span>
+          <span className="module-icon">💬</span>
           <div>
             <h2>
               AI Assistant{' '}
               <span style={{ fontSize: '0.65rem', fontWeight: '400', color: 'var(--text-muted)', marginLeft: '6px' }}>
-                Groq · llama-3.1-8b-instant
+                AI Data Intelligence
               </span>
             </h2>
             <p>Query players, physio risk, nutrition &amp; training in natural language</p>
@@ -390,7 +464,7 @@ export default function Chatbot() {
             {LANGUAGES.map(l => (
               <button
                 key={l.code}
-                onClick={() => setLanguage(l.code)}
+                onClick={() => switchLanguage(l.code)}
                 title={l.code === 'auto' ? 'Auto-detect language' : `Force ${l.label}`}
                 style={{
                   padding: '4px 8px', fontSize: '0.72rem', borderRadius: '6px',
@@ -413,27 +487,27 @@ export default function Chatbot() {
               color: 'var(--text-muted)', cursor: 'pointer',
             }}
           >
-            ↺ New
+            ➕ New
           </button>
         </div>
       </div>
 
-      {/* ── Quick chips ── */}
+      {/* -- Quick chips -- */}
       <div style={{ padding: '8px 0 4px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
         {QUICK_CHIPS.map((chip, i) => (
           <button
             key={i}
             className="suggestion-chip"
             onClick={() => send(chip.message)}
-            disabled={loading}
-            style={{ opacity: loading ? 0.5 : 1 }}
+            disabled={loading || isStreaming}
+            style={{ opacity: (loading || isStreaming) ? 0.5 : 1 }}
           >
             {chip.label}
           </button>
         ))}
       </div>
 
-      {/* ── Player context badge ── */}
+      {/* -- Player context badge -- */}
       {lastPlayer && (
         <div style={{
           padding: '4px 10px', fontSize: '0.72rem', color: 'var(--neon-cyan)',
@@ -441,7 +515,7 @@ export default function Chatbot() {
           display: 'inline-flex', alignItems: 'center', gap: '6px',
           marginBottom: '4px',
         }}>
-          <span>📌 Context:</span>
+          <span>🧠 Context:</span>
           <strong>{lastPlayer.name}</strong>
           <button
             onClick={() => setLastPlayer(null)}
@@ -453,38 +527,48 @@ export default function Chatbot() {
         </div>
       )}
 
-      {/* ── Chat messages ── */}
+      {/* -- Chat messages -- */}
       <div className="chat-wrap">
         <div className="chat-messages">
           {messages.map((msg, i) => (
             <MessageBubble key={msg.id || i} msg={msg} onSelectCandidate={handleCandidateSelect} />
           ))}
+          
+          {isStreaming && (
+            <div className="flex items-start gap-3 mb-4" style={{ paddingLeft: '16px' }}>
+              <div className="bot-avatar" style={{ marginRight: '8px' }}>🤖</div>
+              <div className="typing-indicator" style={{ display: 'flex', alignItems: 'center' }}>
+                <span></span><span></span><span></span>
+              </div>
+            </div>
+          )}
+          
           <div ref={bottomRef} />
         </div>
       </div>
 
-      {/* ── Input ── */}
+      {/* -- Input -- */}
       <div className="chat-input-row">
         <textarea
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={onKey}
           rows={1}
-          placeholder={isRtl ? 'اكتب سؤالك هنا…' : 'Ask about players, physio risk, nutrition…'}
-          disabled={loading}
+          placeholder={isRtl ? '➤ إسأل هنا…' : 'Ask about players, physio risk, nutrition…'}
+          disabled={loading || isStreaming}
           dir={isRtl ? 'rtl' : 'ltr'}
           style={{ resize: 'none', fontFamily: 'inherit', lineHeight: '1.5', minHeight: '42px' }}
         />
         <button
           className="btn-primary"
           onClick={() => send()}
-          disabled={loading || !input.trim()}
+          disabled={loading || isStreaming || !input.trim()}
         >
-          {isRtl ? '↙ إرسال' : 'Send ↗'}
+          {isRtl ? '➤ أرسل' : 'Send 🚀'}
         </button>
       </div>
 
-      {/* ── Session footer ── */}
+      {/* -- Session footer -- */}
       {sessionId && (
         <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
           Session: {sessionId.substring(0, 8)}… · Lang: {language.toUpperCase()}

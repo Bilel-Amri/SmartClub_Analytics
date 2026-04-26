@@ -11,6 +11,55 @@ import { login } from '../auth';
 
 const ROLES = ['coach', 'scout', 'physio', 'nutritionist'];
 
+const FIELD_LABELS = {
+  username: 'Username',
+  password: 'Password',
+  email: 'Email',
+  first_name: 'First name',
+  last_name: 'Last name',
+  role: 'Role',
+  non_field_errors: 'Form',
+  detail: 'Error',
+};
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function formatApiError(err, mode) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+
+  if (status === 401) {
+    return 'Invalid username or password. Check your credentials and try again.';
+  }
+
+  if (status === 400 && data && typeof data === 'object') {
+    const lines = [];
+    for (const [field, rawValue] of Object.entries(data)) {
+      const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+      for (const value of values) {
+        const label = FIELD_LABELS[field] || field;
+        lines.push(`${label}: ${value}`);
+      }
+    }
+    if (lines.length) return lines.join('\n');
+  }
+
+  if (typeof data === 'string' && data.trim()) {
+    return data;
+  }
+
+  if (typeof data === 'object' && data?.detail) {
+    return data.detail;
+  }
+
+  if (mode === 'register') {
+    return 'Registration failed. Please verify your form values and try again.';
+  }
+  return 'Sign in failed. Please check your credentials and try again.';
+}
+
 export default function Login({ onLogin }) {
   const [mode,    setMode]    = useState('login'); // 'login' | 'register'
   const [form,    setForm]    = useState({ username: '', password: '', email: '', first_name: '', last_name: '', role: 'coach' });
@@ -36,8 +85,16 @@ export default function Login({ onLogin }) {
       setError('Username and password are required.');
       return;
     }
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
     if (mode === 'register' && !form.email) {
       setError('Email is required.');
+      return;
+    }
+    if (mode === 'register' && !isValidEmail(form.email)) {
+      setError('Please enter a valid email address (example: name@club.com).');
       return;
     }
     setLoading(true);
@@ -60,17 +117,7 @@ export default function Login({ onLogin }) {
         onLogin(user);
       }
     } catch (err) {
-      const data = err.response?.data;
-      let msg = 'Something went wrong.';
-      if (typeof data === 'string') msg = data;
-      else if (data?.detail) msg = data.detail;
-      else if (typeof data === 'object') {
-        // DRF field errors: {username: ["A user with that username already exists."]}
-        const firstField = Object.keys(data)[0];
-        const firstMsg   = data[firstField];
-        msg = `${firstField}: ${Array.isArray(firstMsg) ? firstMsg[0] : firstMsg}`;
-      }
-      setError(msg);
+      setError(formatApiError(err, mode));
     } finally {
       setLoading(false);
     }
@@ -195,7 +242,7 @@ export default function Login({ onLogin }) {
             <div style={{
               padding: '9px 12px', marginBottom: 12, borderRadius: 7,
               background: 'rgba(242,73,92,0.12)', border: '1px solid rgba(242,73,92,0.3)',
-              color: '#f2495c', fontSize: 12, fontWeight: 500,
+              color: '#f2495c', fontSize: 12, fontWeight: 500, whiteSpace: 'pre-line',
             }}>⚠ {error}</div>
           )}
           {success && (

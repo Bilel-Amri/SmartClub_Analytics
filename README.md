@@ -234,6 +234,9 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r backend/requirements.txt
 
+# Optional: install CatBoost runtime dependencies for Physio ML model loading
+pip install -r backend/requirements-ml.txt
+
 # Configure environment
 cp .env.example .env
 # Edit .env and set at minimum: DJANGO_SECRET_KEY, SOCCERMON_PATH, FOODDATA_PATH
@@ -260,7 +263,10 @@ npm start           # starts at http://localhost:3000
 
 ### 4. Docker (alternative)
 ```bash
-docker-compose up --build
+docker compose up --build
+
+# Optional: include CatBoost runtime deps in backend image
+INSTALL_ML_DEPS=1 docker compose up --build
 ```
 
 ---
@@ -277,8 +283,11 @@ SOCCERMON_PATH=/path/to/soccermon/csv/folder
 FOODDATA_PATH=/path/to/usda/fooddata/folder
 
 # Optional — Switch to PostgreSQL
-USE_POSTGRES=False
+USE_POSTGRES=0
 DATABASE_URL=postgres://user:pass@localhost:5432/smartclub
+
+# Optional — Install heavy ML runtime deps in Docker backend build
+INSTALL_ML_DEPS=0
 
 # Optional — LLM provider (for PhysioAI explanations and Chat LLM)
 GROQ_API_KEY=

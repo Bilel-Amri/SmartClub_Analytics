@@ -16,6 +16,20 @@ import axios from 'axios';
 const ACCESS_KEY  = 'sc_access';
 const REFRESH_KEY = 'sc_refresh';
 
+const PUBLIC_AUTH_PATHS = [
+  '/api/auth/token/',
+  '/api/auth/token/refresh/',
+  '/api/auth/register/',
+  '/api/token/token/',
+  '/api/token/token/refresh/',
+  '/api/token/register/',
+];
+
+function _isPublicAuthRequest(url = '') {
+  const path = String(url).split('?')[0];
+  return PUBLIC_AUTH_PATHS.some((p) => path.endsWith(p));
+}
+
 // ── token helpers ─────────────────────────────────────────────────────────
 
 export function saveTokens(access, refresh) {
@@ -124,8 +138,10 @@ export function setupAxios(axiosInstance) {
   // REQUEST → attach access token
   axiosInstance.interceptors.request.use(
     (config) => {
-      const token = getAccessToken();
-      if (token) config.headers['Authorization'] = `Bearer ${token}`;
+      if (!_isPublicAuthRequest(config.url || '')) {
+        const token = getAccessToken();
+        if (token) config.headers['Authorization'] = `Bearer ${token}`;
+      }
       return config;
     },
     (err) => Promise.reject(err),
@@ -144,6 +160,12 @@ export function setupAxios(axiosInstance) {
     (res) => res,
     async (error) => {
       const original = error.config;
+
+      // Never run refresh logic for login/register endpoints.
+      if (_isPublicAuthRequest(original?.url || '')) {
+        return Promise.reject(error);
+      }
+
       if (error.response?.status !== 401 || original._retry) {
         return Promise.reject(error);
       }
@@ -171,6 +193,7 @@ export function setupAxios(axiosInstance) {
       } catch (refreshErr) {
         processQueue(refreshErr, null);
         clearTokens();
+        window.location.reload();
         return Promise.reject(refreshErr);
       } finally {
         isRefreshing = false;

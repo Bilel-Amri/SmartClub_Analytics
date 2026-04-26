@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Dict, Iterable, List
-
-import numpy as np
 
 from .models import PhysioHistoricalCase
 
@@ -23,58 +22,50 @@ def _load_band_num(v: str) -> float:
     return m.get((v or "medium").lower(), 2.0)
 
 
-def _injury_vector(case: PhysioHistoricalCase) -> np.ndarray:
-    return np.array(
-        [
-            float(case.age),
-            float(case.previous_injuries),
-            float(case.previous_same_zone),
-            1.0 if case.recurrence_same_zone else 0.0,
-            _load_band_num(case.training_load_band),
-            float(case.days_since_last_intense),
-        ],
-        dtype=float,
-    )
+def _injury_vector(case: PhysioHistoricalCase) -> List[float]:
+    return [
+        float(case.age),
+        float(case.previous_injuries),
+        float(case.previous_same_zone),
+        1.0 if case.recurrence_same_zone else 0.0,
+        _load_band_num(case.training_load_band),
+        float(case.days_since_last_intense),
+    ]
 
 
-def _absence_vector(case: PhysioHistoricalCase) -> np.ndarray:
-    return np.array(
-        [
-            float(case.age),
-            float(case.previous_same_zone),
-            1.0 if case.recurrence_same_zone else 0.0,
-            _load_band_num(case.training_load_band),
-            float(case.absence_days),
-        ],
-        dtype=float,
-    )
+def _absence_vector(case: PhysioHistoricalCase) -> List[float]:
+    return [
+        float(case.age),
+        float(case.previous_same_zone),
+        1.0 if case.recurrence_same_zone else 0.0,
+        _load_band_num(case.training_load_band),
+        float(case.absence_days),
+    ]
 
 
-def _target_risk_vector(payload: Dict) -> np.ndarray:
-    return np.array(
-        [
-            float(payload.get("age", 25)),
-            float(payload.get("previous_injuries", 0)),
-            float(payload.get("injuries_last_2_seasons", 0)),
-            1.0 if payload.get("recurrence_same_zone") else 0.0,
-            _load_band_num(payload.get("training_load_band", "medium")),
-            float(payload.get("days_since_last_intense", 2)),
-        ],
-        dtype=float,
-    )
+def _target_risk_vector(payload: Dict) -> List[float]:
+    return [
+        float(payload.get("age", 25)),
+        float(payload.get("previous_injuries", 0)),
+        float(payload.get("injuries_last_2_seasons", 0)),
+        1.0 if payload.get("recurrence_same_zone") else 0.0,
+        _load_band_num(payload.get("training_load_band", "medium")),
+        float(payload.get("days_since_last_intense", 2)),
+    ]
 
 
-def _target_absence_vector(payload: Dict) -> np.ndarray:
-    return np.array(
-        [
-            float(payload.get("age", 25)),
-            float(payload.get("previous_same_zone", 0)),
-            1.0 if payload.get("recurrence_same_zone") else 0.0,
-            _load_band_num(payload.get("training_load_band", "medium")),
-            float(payload.get("absence_anchor_days", 21)),
-        ],
-        dtype=float,
-    )
+def _target_absence_vector(payload: Dict) -> List[float]:
+    return [
+        float(payload.get("age", 25)),
+        float(payload.get("previous_same_zone", 0)),
+        1.0 if payload.get("recurrence_same_zone") else 0.0,
+        _load_band_num(payload.get("training_load_band", "medium")),
+        float(payload.get("absence_anchor_days", 21)),
+    ]
+
+
+def _euclidean_distance(a: List[float], b: List[float]) -> float:
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
 def _match_pct_from_distance(distance: float) -> float:
@@ -90,11 +81,11 @@ def _format_case_summary(case: PhysioHistoricalCase) -> str:
     )
 
 
-def _top_k(cases: Iterable[PhysioHistoricalCase], target: np.ndarray, mode: str, k: int = 3) -> List[SimilarityResult]:
+def _top_k(cases: Iterable[PhysioHistoricalCase], target: List[float], mode: str, k: int = 3) -> List[SimilarityResult]:
     pairs = []
     for case in cases:
         vec = _injury_vector(case) if mode == "risk" else _absence_vector(case)
-        distance = float(np.linalg.norm(target - vec))
+        distance = float(_euclidean_distance(target, vec))
         pairs.append((case, distance))
 
     pairs.sort(key=lambda x: x[1])

@@ -1,263 +1,394 @@
-"""
-LLM client — providers: groq (default), openai, openrouter, ollama (fallback).
-Public API:
-  chat_completion(messages, tools=None, temperature=0.3)          → _Message
-  chat_completion_stream(messages, temperature=0.3)               → generator[str]
-"""
 from __future__ import annotations
+
 import json
+import logging
 import os
-from django.conf import settings
+import time
+from typing import Generator, Iterator
 
-MAX_TOKENS = 600  # enough for a rich reply with risk table + action
+logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────
+# Provider detection
+# ──────────────────────────────────────────────
 
-def _get_setting(name: str, default: str = '') -> str:
-    return getattr(settings, name, os.getenv(name, default))
+LLM_PROVIDER   = os.getenv("LLM_PROVIDER", "groq").lower()      # "groq" | "openai"
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+LLM_MODEL      = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
 
+FALLBACK_PROVIDER = os.getenv("FALLBACK_PROVIDER", "").lower()
+FALLBACK_MODEL    = os.getenv("FALLBACK_MODEL", "")
 
-# ── Shared response objects ────────────────────────────────────────────────────
+# Groq's free-tier rate limits (requests per minute / tokens per minute)
+GROQ_RPM_LIMIT = 30
+GROQ_TPM_LIMIT = 14_400   # llama-3.1-8b-instant free tier
 
-class _ToolCall:
-    def __init__(self, tc: dict):
-        self.id = tc.get('id', '')
-        class _Fn:
-            def __init__(self, f: dict):
-                self.name = f.get('name', '')
-                args = f.get('arguments', '{}')
-                self.arguments = args if isinstance(args, str) else json.dumps(args)
-        self.function = _Fn(tc.get('function', {}))
+# ──────────────────────────────────────────────
+# Lazy client initialisation
+# ──────────────────────────────────────────────
 
-
-class _Message:
-    def __init__(self, m: dict):
-        self.role       = m.get('role', 'assistant')
-        self.content    = m.get('content') or ''
-        raw_tc          = m.get('tool_calls') or []
-        self.tool_calls = [_ToolCall(tc) for tc in raw_tc] if raw_tc else []
-
-    def model_dump(self) -> dict:
-        tcs = []
-        for tc in self.tool_calls:
-            tcs.append({
-                'id': tc.id,
-                'type': 'function',
-                'function': {'name': tc.function.name, 'arguments': tc.function.arguments},
-            })
-        return {'role': self.role, 'content': self.content, 'tool_calls': tcs or None}
+_groq_client   = None
+_openai_client = None
 
 
-def _wrap_sdk_message(sdk_msg) -> _Message:
-    """Convert an openai SDK message object into our _Message shape."""
-    tcs = []
-    for tc in (sdk_msg.tool_calls or []):
-        tcs.append({'id': tc.id, 'function': {'name': tc.function.name,
-                                               'arguments': tc.function.arguments}})
-    return _Message({'role': getattr(sdk_msg, 'role', 'assistant'),
-                     'content': sdk_msg.content or '', 'tool_calls': tcs})
-
-
-# ── Ollama (local, requests-based) ────────────────────────────────────────────
-
-def _ollama_chat(model: str, messages: list[dict], tools: list[dict] | None,
-                 temperature: float, stream: bool = False):
-    import requests
-    base = _get_setting('OLLAMA_BASE_URL', 'http://localhost:11434')
-    url  = f'{base.rstrip("/")}/v1/chat/completions'
-    payload: dict = {
-        'model': model, 'messages': messages,
-        'temperature': temperature, 'max_tokens': MAX_TOKENS, 'stream': stream,
-    }
-    if tools:
-        payload['tools'] = tools
-        payload['tool_choice'] = 'auto'
-    try:
-        if stream:
-            resp = requests.post(url, json=payload, timeout=180, stream=True)
-            resp.raise_for_status()
-            def _gen():
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    s = line.decode('utf-8') if isinstance(line, bytes) else line
-                    if s.startswith('data:'):
-                        s = s[5:].strip()
-                    if s == '[DONE]':
-                        break
-                    try:
-                        delta = json.loads(s)['choices'][0].get('delta', {})
-                        chunk = delta.get('content') or ''
-                        if chunk:
-                            yield chunk
-                    except Exception:
-                        continue
-            return _gen()
-        else:
-            resp = requests.post(url, json=payload, timeout=180)
-            resp.raise_for_status()
-            return _Message(resp.json()['choices'][0]['message'])
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError('Cannot connect to Ollama — run: ollama serve')
-    except requests.exceptions.Timeout:
-        raise RuntimeError('Ollama timed out')
-    except requests.exceptions.HTTPError as e:
+def _get_groq_client():
+    global _groq_client
+    if _groq_client is None:
         try:
-            detail = resp.json()
-        except Exception:
-            detail = resp.text[:300]
-        raise RuntimeError(f'Ollama {resp.status_code}: {detail}') from e
+            from groq import Groq
+            import httpx
+            _groq_client = Groq(
+                api_key=GROQ_API_KEY,
+                http_client=httpx.Client(
+                    timeout=httpx.Timeout(15.0, connect=5.0),
+                    limits=httpx.Limits(
+                        max_keepalive_connections=5,
+                        max_connections=10,
+                        keepalive_expiry=30,
+                    ),
+                ),
+            )
+        except ImportError:
+            raise RuntimeError(
+                "groq package not installed. Run: pip install groq"
+            )
+    return _groq_client
 
 
-# ── SDK-based providers (groq, openai, openrouter) ────────────────────────────
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        try:
+            from openai import OpenAI
+            _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        except ImportError:
+            raise RuntimeError(
+                "openai package not installed. Run: pip install openai"
+            )
+    return _openai_client
 
-def _make_sdk_client():
-    provider = _get_setting('LLM_PROVIDER', 'groq').lower()
+
+# ──────────────────────────────────────────────
+# Core chat completion  (non-streaming)
+# ──────────────────────────────────────────────
+
+def chat_completion(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.3,
+    max_tokens: int = 1024,
+    provider: str | None = None,
+    model: str | None = None,
+    _retry: int = 0,
+) -> dict:
+    """
+    Returns the raw API response dict (normalised to OpenAI schema).
+    Raises LLMError on unrecoverable failure.
+    """
+    provider = provider or LLM_PROVIDER
+    model    = model    or LLM_MODEL
+
     try:
-        from openai import OpenAI
-    except ImportError:
-        return None, None, 'openai package not installed — run: pip install openai'
-
-    if provider == 'groq':
-        key = _get_setting('GROQ_API_KEY', '')
-        if not key:
-            return None, None, 'GROQ_API_KEY not set in .env — get free key: https://console.groq.com'
-        model = _get_setting('LLM_MODEL', 'llama-3.1-8b-instant')
-        return OpenAI(api_key=key, base_url='https://api.groq.com/openai/v1',
-                      timeout=30.0), model, None
-
-    if provider == 'openai':
-        key = _get_setting('OPENAI_API_KEY', '')
-        if not key:
-            return None, None, 'OPENAI_API_KEY not set in .env'
-        return OpenAI(api_key=key), _get_setting('LLM_MODEL', 'gpt-4o-mini'), None
-
-    if provider == 'openrouter':
-        key = _get_setting('OPENROUTER_API_KEY', '')
-        if not key:
-            return None, None, 'OPENROUTER_API_KEY not set in .env'
-        client = OpenAI(api_key=key, base_url='https://openrouter.ai/api/v1')
-        return client, _get_setting('LLM_MODEL', 'openai/gpt-4o-mini'), None
-
-    return None, None, f'Unknown LLM_PROVIDER: {provider}'
-
-
-# Lazy singleton — reset when settings change
-_sdk_client = _sdk_model = _sdk_error = None
-_sdk_loaded = False
-_sdk_loaded_provider = None  # track which provider the singleton was built for
-
-
-def _get_sdk_client():
-    global _sdk_client, _sdk_model, _sdk_error, _sdk_loaded, _sdk_loaded_provider
-    provider = _get_setting('LLM_PROVIDER', 'groq').lower()
-    # Rebuild if provider changed (e.g. after restart / settings reload)
-    if not _sdk_loaded or _sdk_loaded_provider != provider:
-        _sdk_client, _sdk_model, _sdk_error = _make_sdk_client()
-        _sdk_loaded = True
-        _sdk_loaded_provider = provider
-        import logging
-        log = logging.getLogger('chat_llm')
-        if _sdk_error:
-            log.warning('LLM client error: %s', _sdk_error)
+        if provider == "groq":
+            return _groq_chat(messages, tools, temperature, max_tokens, model)
+        elif provider == "openai":
+            return _openai_chat(messages, tools, temperature, max_tokens, model)
         else:
-            log.info('LLM client ready: provider=%s model=%s', provider, _sdk_model)
-    return _sdk_client, _sdk_model, _sdk_error
+            raise LLMError(f"Unknown LLM_PROVIDER: '{provider}'")
 
+    except RateLimitError as exc:
+        if _retry < 3:
+            wait = min(2 ** _retry, 8)          # exponential back-off: 1s, 2s, 4s (max 8)
+            logger.warning("Rate limit hit, retrying in %ss…", wait)
+            time.sleep(wait)
+            return chat_completion(
+                messages, tools, temperature, max_tokens,
+                provider, model, _retry=_retry + 1
+            )
+        # Try fallback provider before giving up
+        if FALLBACK_PROVIDER and _retry == 3:
+            logger.warning("Switching to fallback provider: %s", FALLBACK_PROVIDER)
+            return chat_completion(
+                messages, tools, temperature, max_tokens,
+                provider=FALLBACK_PROVIDER,
+                model=FALLBACK_MODEL or model,
+                _retry=0,
+            )
+        raise LLMError(f"Rate limit exhausted after retries: {exc}") from exc
 
-def _sdk_call(stream: bool, messages: list[dict], tools: list[dict] | None,
-              temperature: float):
-    client, model, error = _get_sdk_client()
-    if error:
-        raise RuntimeError(error)
-    kwargs: dict = dict(model=model, messages=messages,
-                        temperature=temperature, max_tokens=MAX_TOKENS)
-    if tools:
-        kwargs['tools'] = tools
-        kwargs['tool_choice'] = 'auto'
-    if stream:
-        kwargs['stream'] = True
-    try:
-        resp = client.chat.completions.create(**kwargs)
     except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    if stream:
-        def _gen():
-            for chunk in resp:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-        return _gen()
-    return _wrap_sdk_message(resp.choices[0].message)
+        logger.exception("LLM call failed: %s", exc)
+        raise LLMError(str(exc)) from exc
 
 
-# ── Fallback helper ────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# Streaming completion  (yields text chunks)
+# ──────────────────────────────────────────────
 
-def _with_fallback(primary_fn, fallback_fn):
-    try:
-        return primary_fn()
-    except RuntimeError:
-        return fallback_fn()
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def chat_completion(messages: list[dict], tools: list[dict] | None = None,
-                    temperature: float = 0.3, language: str = '') -> '_Message':
+def chat_completion_stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.3,
+    max_tokens: int = 1024,
+    provider: str | None = None,
+    model: str | None = None,
+) -> Generator[str, None, None]:
     """
-    Non-streaming completion. Returns _Message with .content, .tool_calls,
-    and .model_dump(). Raises RuntimeError on unrecoverable failure.
+    Yields SSE-formatted strings: "data: <chunk>\\n\\n"
+    Last event is always:         "data: [DONE]\\n\\n"
+
+    Tool calls are NOT streamed — if a tool_call is detected in the
+    accumulated delta, the generator yields a special JSON sentinel:
+        "data: __TOOL_CALL__:<json>\\n\\n"
+    so views.py can intercept and execute the tool.
     """
-    provider  = _get_setting('LLM_PROVIDER', 'groq').lower()
-    fallback  = _get_setting('FALLBACK_PROVIDER', '').lower()
-    fb_model  = _get_setting('FALLBACK_MODEL', '') or 'qwen2.5:3b'
-
-    def _primary():
-        if provider == 'ollama':
-            return _ollama_chat(_get_setting('LLM_MODEL', 'llama-3.1-8b-instant'),
-                                messages, tools, temperature)
-        return _sdk_call(stream=False, messages=messages, tools=tools,
-                         temperature=temperature)
-
-    def _fallback():
-        if fallback == 'ollama':
-            return _ollama_chat(fb_model, messages, tools, temperature)
-        raise RuntimeError('No fallback provider configured')
-
-    if fallback:
-        return _with_fallback(_primary, _fallback)
-    return _primary()
-
-
-def chat_completion_stream(messages: list[dict],
-                           temperature: float = 0.3):
-    """
-    Streaming completion (no tool schemas — final-answer pass only).
-    Returns a generator of str text chunks.
-    Falls back gracefully if the provider doesn't support streaming.
-    """
-    provider = _get_setting('LLM_PROVIDER', 'groq').lower()
-    fallback = _get_setting('FALLBACK_PROVIDER', '').lower()
-    fb_model = _get_setting('FALLBACK_MODEL', '') or 'qwen2.5:3b'
-
-    def _primary():
-        if provider == 'ollama':
-            return _ollama_chat(_get_setting('LLM_MODEL', 'llama-3.1-8b-instant'),
-                                messages, None, temperature, stream=True)
-        return _sdk_call(stream=True, messages=messages, tools=None,
-                         temperature=temperature)
-
-    def _fallback_gen():
-        if fallback == 'ollama':
-            return _ollama_chat(fb_model, messages, None, temperature, stream=True)
-        # Last resort: non-stream, yield single chunk
-        msg = chat_completion(messages, temperature=temperature)
-        def _once():
-            yield msg.content
-        return _once()
+    provider = provider or LLM_PROVIDER
+    model    = model    or LLM_MODEL
 
     try:
-        return _primary()
-    except RuntimeError:
-        if fallback:
-            return _fallback_gen()
-        raise
+        if provider == "groq":
+            yield from _groq_stream(messages, tools, temperature, max_tokens, model)
+        elif provider == "openai":
+            yield from _openai_stream(messages, tools, temperature, max_tokens, model)
+        else:
+            raise LLMError(f"Unknown LLM_PROVIDER: '{provider}'")
+    except Exception as exc:
+        logger.exception("Streaming failed: %s", exc)
+        yield f"data: __ERROR__:{exc}\n\n"
+
+
+# ──────────────────────────────────────────────
+# Groq implementations
+# ──────────────────────────────────────────────
+
+def _groq_chat(messages, tools, temperature, max_tokens, model) -> dict:
+    client = _get_groq_client()
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    try:
+        response = client.chat.completions.create(**kwargs, timeout=15.0)
+    except Exception as exc:
+        _classify_and_raise(exc)
+
+    # Normalise to a plain dict (same shape as OpenAI response)
+    return _normalise_groq_response(response)
+
+
+def _groq_stream(messages, tools, temperature, max_tokens, model) -> Iterator[str]:
+    client = _get_groq_client()
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+    )
+    # NOTE: Groq supports tool_calls in streaming but the accumulation is manual.
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    accumulated_tool_calls: dict = {}   # index -> {id, name, arguments}
+
+    try:
+        stream = client.chat.completions.create(**kwargs, timeout=15.0)
+    except Exception as exc:
+        _classify_and_raise(exc)
+
+    try:
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+
+            # ── Text chunk ──────────────────────────────
+            if delta.content:
+                yield f"data: {json.dumps({'text': delta.content})}\n\n"
+
+            # ── Tool call accumulation ───────────────────
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in accumulated_tool_calls:
+                        accumulated_tool_calls[idx] = {
+                            "id":        tc.id or "",
+                            "name":      tc.function.name if tc.function else "",
+                            "arguments": "",
+                        }
+                    if tc.function:
+                        if tc.id:
+                            accumulated_tool_calls[idx]["id"] = tc.id
+                        if tc.function.name:
+                            accumulated_tool_calls[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+            finish = chunk.choices[0].finish_reason if chunk.choices else None
+            if finish in ("tool_calls", "stop") and accumulated_tool_calls:
+                for call in accumulated_tool_calls.values():
+                    yield f"data: __TOOL_CALL__:{json.dumps(call)}\n\n"
+                accumulated_tool_calls = {}
+
+        yield "data: [DONE]\n\n"
+    except Exception as exc:
+        err_msg = str(exc)
+        if "failed_generation" in err_msg or "Failed to call a function" in err_msg:
+            # Prompt too complex for function calling
+            # Yield a clear error and stop
+            yield f"data: {json.dumps({'type': 'error', 'data': 'The request was too complex. Please try rephrasing.'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        else:
+            _classify_and_raise(exc)
+
+
+# ──────────────────────────────────────────────
+# OpenAI implementations  (fallback / alternative)
+# ──────────────────────────────────────────────
+
+def _openai_chat(messages, tools, temperature, max_tokens, model) -> dict:
+    client = _get_openai_client()
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        _classify_and_raise(exc)
+
+    return response.model_dump()
+
+
+def _openai_stream(messages, tools, temperature, max_tokens, model) -> Iterator[str]:
+    client = _get_openai_client()
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+    )
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    accumulated_tool_calls: dict = {}
+
+    try:
+        stream = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        _classify_and_raise(exc)
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta is None:
+            continue
+
+        if delta.content:
+            yield f"data: {json.dumps({'text': delta.content})}\n\n"
+
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                idx = tc.index
+                if idx not in accumulated_tool_calls:
+                    accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc.id:
+                    accumulated_tool_calls[idx]["id"] = tc.id
+                if tc.function and tc.function.name:
+                    accumulated_tool_calls[idx]["name"] = tc.function.name
+                if tc.function and tc.function.arguments:
+                    accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+
+        finish = chunk.choices[0].finish_reason if chunk.choices else None
+        if finish in ("tool_calls", "stop") and accumulated_tool_calls:
+            for call in accumulated_tool_calls.values():
+                yield f"data: __TOOL_CALL__:{json.dumps(call)}\n\n"
+            accumulated_tool_calls = {}
+
+    yield "data: [DONE]\n\n"
+
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+def _normalise_groq_response(response) -> dict:
+    """Convert Groq SDK object to plain dict matching OpenAI schema."""
+    choices = []
+    for choice in response.choices:
+        msg = choice.message
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = [
+                {
+                    "id":       tc.id,
+                    "type":     "function",
+                    "function": {
+                        "name":      tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+        choices.append({
+            "index": choice.index,
+            "message": {
+                "role":       msg.role,
+                "content":    msg.content,
+                "tool_calls": tool_calls,
+            },
+            "finish_reason": choice.finish_reason,
+        })
+
+    return {
+        "id":      response.id,
+        "model":   response.model,
+        "choices": choices,
+        "usage": {
+            "prompt_tokens":     response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens":      response.usage.total_tokens,
+        } if response.usage else {},
+    }
+
+
+def _classify_and_raise(exc: Exception):
+    """Map provider SDK exceptions to our own typed errors."""
+    msg = str(exc).lower()
+    if "rate limit" in msg or "429" in msg:
+        import time
+        print(f"=== RATE LIMIT HIT at {time.strftime('%H:%M:%S')} ===")
+        raise RateLimitError(str(exc)) from exc
+    if "auth" in msg or "401" in msg or "api key" in msg:
+        raise AuthError(str(exc)) from exc
+    raise LLMError(str(exc)) from exc
+
+
+# ──────────────────────────────────────────────
+# Custom exceptions
+# ──────────────────────────────────────────────
+
+class LLMError(Exception):
+    """Generic LLM failure."""
+
+class RateLimitError(LLMError):
+    """Provider rate-limit hit."""
+
+class AuthError(LLMError):
+    """Bad API key or permissions."""
